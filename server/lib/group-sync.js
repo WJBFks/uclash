@@ -197,6 +197,49 @@ export function readConfigProviders() {
   return out;
 }
 
+// 剔除自动注入块（其 use: 引用由 group-sync 管理，不算「用户选择」）
+const MARK_RE = new RegExp(
+  `^${MARK_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$[\\s\\S]*?^${MARK_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`,
+  'm',
+);
+const stripInjectedBlock = (text) => text.replace(MARK_RE, '');
+
+/**
+ * 「当前选中」的订阅源：主配置（注入块之外）use: 引用到的已声明 provider 名集合。
+ * 激活（注入主配置）会把这些引用全部改指向目标源，所以该集合即用户当前选中的源。
+ * 为空表示没有任何源被引用（调用方自行回退，例如按全部源处理）。
+ */
+export function activeProviderNames() {
+  let text;
+  try {
+    text = fs.readFileSync(mihomoCfg, 'utf8');
+  } catch {
+    return [];
+  }
+  const declared = configProviderNames();
+  const out = [];
+  let inGroups = false;
+  let inUse = false;
+  for (const line of stripInjectedBlock(text).split(/\r?\n/)) {
+    if (/^proxy-groups:\s*$/.test(line)) { inGroups = true; inUse = false; continue; }
+    if (inGroups && /^\S/.test(line)) break;
+    if (!inGroups) continue;
+    if (/^\s+-\s*name:/.test(line)) { inUse = false; continue; }
+    if (/^\s+use:\s*(?:#.*)?$/.test(line)) { inUse = true; continue; }
+    if (inUse) {
+      const it = line.match(/^\s+-\s*(.+)$/);
+      if (it) {
+        const n = unq(it[1]);
+        // default 是 mihomo 内置幻影源，无缓存文件，不算选中
+        if (n !== 'default' && declared.has(n) && !out.includes(n)) out.push(n);
+      } else {
+        inUse = false;
+      }
+    }
+  }
+  return out;
+}
+
 /** 主配置（注入块之外）中 use: 了指定 provider 的组名列表——删除订阅源前的引用保护。 */
 export function findProviderRefs(providerName) {
   let text;
@@ -205,8 +248,7 @@ export function findProviderRefs(providerName) {
   } catch {
     return [];
   }
-  // 剔除自动注入块（其 use: 引用由 group-sync 管理，删除后会随之重建）
-  const stripped = text.replace(new RegExp(`^${MARK_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$[\\s\\S]*?^${MARK_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm'), '');
+  const stripped = stripInjectedBlock(text);
   const refs = [];
   let inGroups = false;
   let inUse = false;
@@ -231,9 +273,9 @@ export function findProviderRefs(providerName) {
 }
 
 /** 收集所有 provider 缓存：{ 节点名 → provider 名 } + 全部组定义（带 provider 归属）。
- * provider 名从 config.yaml 的 proxy-providers 段（path 文件名）解析，回退为文件名。
+ * activeNames 非空时只收集这些 provider（「仅当前选中订阅源」语义）。
  */
-function collectFromProviders() {
+function collectFromProviders(activeNames = null) {
   const dir = path.join(path.dirname(mihomoCfg), 'providers');
   const cfgText = fs.readFileSync(mihomoCfg, 'utf8');
 
@@ -261,6 +303,7 @@ function collectFromProviders() {
   }
   for (const f of files) {
     const provName = pathToName.get(f.replace(/\.ya?ml$/, '')) || f.replace(/\.ya?ml$/, '');
+    if (activeNames && !activeNames.includes(provName)) continue;
     let parsed;
     try {
       parsed = parseProviderFile(fs.readFileSync(path.join(dir, f), 'utf8'));
@@ -309,8 +352,9 @@ export function parseYamlRules(text) {
   return out;
 }
 
-/** 收集所有 provider 缓存的 rules 段（去重）：供前端展示“订阅定义但未生效”的规则。 */
-export function readProviderRules() {
+/** 收集 provider 缓存的 rules 段（去重）：供前端展示“订阅定义但未生效”的规则。
+ * activeNames 非空时只读这些 provider 的缓存。 */
+export function readProviderRules(activeNames = null) {
   const dir = path.join(path.dirname(mihomoCfg), 'providers');
   const out = [];
   const seen = new Set();
@@ -321,6 +365,8 @@ export function readProviderRules() {
     return out;
   }
   for (const f of files) {
+    const provName = f.replace(/\.ya?ml$/, '');
+    if (activeNames && !activeNames.includes(provName)) continue;
     let text;
     try {
       text = fs.readFileSync(path.join(dir, f), 'utf8');
@@ -390,7 +436,9 @@ function buildGroupLines(allGroups, nodeToProvider, existingNames) {
 
 /** 生成候选配置：删旧注入块 → 重建注入块（插在 proxy-groups: 之后）。返回 { candidate, picked, dropped, changed } 或 { error } */
 function buildCandidate() {
-  const { nodeToProvider, allGroups } = collectFromProviders();
+  // 只注入「当前选中」订阅源的组；无选中源时回退为全部源（保持旧行为）
+  const active = activeProviderNames();
+  const { nodeToProvider, allGroups } = collectFromProviders(active.length ? active : null);
   const cfgText = fs.readFileSync(mihomoCfg, 'utf8');
   const lines = cfgText.split(/\r?\n/);
 

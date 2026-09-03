@@ -63,5 +63,6 @@ src/                   # Vue3 + TS + SCSS 前端
 - **订阅刷新 / 导入的热加载**：`PUT /configs` 必须带 `{"path": ...}` body（mihomo v1.19 对空 body 返回 400）；热加载后等 6s 并比对 `~/.config/mihomo/providers/*.yaml` 的 mtime，区分「已更新 / 无变化（源不可达，仍在用旧节点）/ 服务未运行 / 请求被拒」——API 调通 ≠ 订阅真的拉到。
 - **订阅列表**：mihomo v1.19 无 `/subscriptions` 端点（clash premium 功能），权威列表 = config.yaml `proxy-providers` 声明 ∪ `~/.config/mihomo/providers/*.yaml` 缓存文件；未声明源的 URL 从缓存文件 `#!MANAGED-CONFIG` 头回退解析；用量/到期来自订阅 URL 响应头 `subscription-userinfo`（经 mihomo 出口拉取，10min 缓存）。
 - **激活订阅源（注入主配置）**：独占语义——`POST /api/subscriptions/activate` 把注入块之外的主配置组 `use:` 全部改指向目标源（未声明的源先自动补 proxy-providers 声明），热加载后重建订阅组；`active` = 有主配置组引用该源。删除被主配置组引用的源会被拒绝；仅本地缓存的源直接删文件。
+- **组注入/代理组页按「当前选中源」过滤**：group-sync 只收集被主配置（注入块外）`use:` 引用到的 provider（`activeProviderNames()`，无引用时回退全部源）；代理组页的未激活组（orphanGroups）与订阅规则（subRules）同样只显示当前选中源，多源时不串台。
 - **节点名保留原样**：部分节点名含前导/尾随空格，trim 后 PUT 切换会 400。
 - **零运行时依赖**：后端仅用 node: 内置模块；前端依赖（vue/vite 等）均为 devDependency，构建产物自包含。

@@ -7,7 +7,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { config, PROXY_ON_CONTENT } from './config.js';
 import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, sleep } from './mihomo.js';
-import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules } from './lib/group-sync.js';
+import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules, activeProviderNames } from './lib/group-sync.js';
 
 const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
@@ -55,7 +55,7 @@ function parseYamlGroups(text) {
 
 // mtime 缓存，避免 3s 轮询反复读文件
 const providerGroupsCache = new Map(); // file → { mtimeMs, groups }
-function readProviderGroups() {
+function readProviderGroups(activeNames = null) {
   const dir = path.join(path.dirname(mihomoCfg), 'providers');
   const out = [];
   let files = [];
@@ -65,6 +65,8 @@ function readProviderGroups() {
     return out;
   }
   for (const f of files) {
+    const provName = f.replace(/\.ya?ml$/, '');
+    if (activeNames && !activeNames.includes(provName)) continue;
     const file = path.join(dir, f);
     let st;
     try {
@@ -226,13 +228,16 @@ const handlers = {
           .map((x) => ({ type: x.type || '', payload: x.payload || '', proxy: x.proxy }));
       }
     } catch {}
+    // 只展示「当前选中」订阅源（主配置 use: 引用到的源）的未生效组与规则；无选中源时回退为全部源
+    const activeNames = activeProviderNames();
+    const activeFilter = activeNames.length ? activeNames : null;
     // 订阅源定义、但 mihomo 未激活的组（provider 只导入节点不导入组）
     const seen = new Set(groups.map((g) => g.name));
-    const orphanGroups = readProviderGroups().filter((g) => !seen.has(g.name));
+    const orphanGroups = readProviderGroups(activeFilter).filter((g) => !seen.has(g.name));
     // 订阅源 yaml 里定义的规则（未合并进主配置，前端展示“定义但未生效”）
     let subRules = [];
     try {
-      subRules = readProviderRules();
+      subRules = readProviderRules(activeFilter);
     } catch {}
     return { ok: true, mode, groups, meta, orphanGroups, rules, subRules };
   },
