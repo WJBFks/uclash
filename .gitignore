@@ -11,6 +11,10 @@ node_modules/
 dist/
 # 参考截图（本地临时文件）
 9265e3b3-4249-49bf-b900-ccfa4b2a60c7.png
+933d1211-bbee-4152-8c1d-7ac7c0420536.png
+
+# Python 缓存
+server/lib/__pycache__/
 
 # 参考代码（Clash Verge 开源项目，仅本地参考用）
 clash-verge-rev/

@@ -7,7 +7,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { config, PROXY_ON_CONTENT } from './config.js';
 import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, sleep } from './mihomo.js';
-import { syncSubscriptionGroups, configProviderNames, readProviderRules } from './lib/group-sync.js';
+import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules } from './lib/group-sync.js';
 
 const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
@@ -85,6 +85,43 @@ function readProviderGroups() {
     out.push(...groups);
   }
   return out;
+}
+
+// ---- 订阅用量（subscription-userinfo 响应头，经 mihomo 出口拉取，10 分钟缓存）----
+const userinfoCache = new Map(); // name -> { at, info }
+const USERINFO_TTL = 10 * 60 * 1000;
+
+function parseUserinfoHeaders(hu, hm) {
+  const num = (s, k) => {
+    const m = s.match(new RegExp(k + '=([^;\\s]+)'));
+    return m ? Number(m[1]) : null;
+  };
+  const info = { upload: null, download: null, total: null, expire: null };
+  if (hu) {
+    info.upload = num(hu, 'upload');
+    info.download = num(hu, 'download');
+    info.total = num(hu, 'total');
+    info.expire = num(hu, 'expire');
+  }
+  if (hm && info.expire == null) info.expire = Number(hm);
+  return info.upload != null || info.expire != null ? info : null;
+}
+
+async function fetchUserinfo(name, url) {
+  const hit = userinfoCache.get(name);
+  if (hit && Date.now() - hit.at < USERINFO_TTL) return hit.info;
+  let info = null;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    const res = await fetch(url, { signal: ctrl.signal, redirect: 'follow', headers: { 'User-Agent': 'clash-web/2.0' } });
+    clearTimeout(timer);
+    info = parseUserinfoHeaders(res.headers.get('subscription-userinfo') || '', res.headers.get('subscription-expire') || '');
+  } catch {
+    info = null;
+  }
+  userinfoCache.set(name, { at: Date.now(), info });
+  return info;
 }
 
 const handlers = {
@@ -266,18 +303,91 @@ const handlers = {
     return { ok: true, url: testUrl, count: results.length, method: 'healthcheck', results };
   },
 
-  // 订阅（provider）列表。mihomo v1.19 无 /subscriptions 端点，改用 /providers/proxies。
+  // 订阅源卡片列表：以 config.yaml 的 proxy-providers 段为权威（mihomo /providers/proxies
+  // 只补充运行时节点数；v1.19 会把注入组混入该接口，不可信）。
   async 'GET /api/subscriptions'() {
-    const r = await httpJson(mihomoApi + '/providers/proxies');
-    if (!r.ok || !r.json) return { ok: false, error: '获取订阅列表失败（mihomo 服务未运行或无订阅配置）' };
-    const provObj = r.json.providers || {};
-    // mihomo v1.19 会把注入的订阅组也列进 /providers/proxies，过滤掉只留真实 provider
-    const realNames = configProviderNames();
-    const providers = (Array.isArray(provObj)
-      ? provObj
-      : Object.keys(provObj).map((name) => ({ name, ...provObj[name] }))
-    ).filter((p) => realNames.has(p.name));
-    return { ok: true, subscriptions: providers.map((p) => p.name || p.provider || '').filter(Boolean), providers };
+    const cfgProvs = readConfigProviders();
+    let miMap = new Map();
+    try {
+      const r = await httpJson(mihomoApi + '/providers/proxies');
+      if (r.ok && r.json) {
+        const provObj = r.json.providers || {};
+        const arr = Array.isArray(provObj) ? provObj : Object.keys(provObj).map((n) => ({ name: n, ...provObj[n] }));
+        miMap = new Map(arr.map((p) => [p.name, p]));
+      }
+    } catch {}
+    const providers = cfgProvs.map((cp) => {
+      const mi = miMap.get(cp.name);
+      const filePath = cp.path
+        ? path.resolve(path.dirname(mihomoCfg), cp.path)
+        : path.join(path.dirname(mihomoCfg), 'providers', `${cp.name}.yaml`);
+      let updated = 0;
+      try { updated = fs.statSync(filePath).mtimeMs; } catch {}
+      if (!updated && mi && mi.updated) updated = Number(mi.updated) || 0;
+      let groupCount = 0, ruleCount = 0;
+      try {
+        const text = fs.readFileSync(filePath, 'utf8');
+        groupCount = parseProviderFile(text).groups.length;
+        ruleCount = parseYamlRules(text).length;
+      } catch {}
+      const hit = userinfoCache.get(cp.name);
+      return {
+        name: cp.name,
+        url: cp.url,
+        interval: cp.interval,
+        nodes: mi && Array.isArray(mi.proxies) ? mi.proxies.length : 0,
+        updated: Math.floor(updated),
+        groupCount,
+        ruleCount,
+        userinfo: hit && Date.now() - hit.at < USERINFO_TTL ? hit.info : null,
+      };
+    });
+    return { ok: true, subscriptions: providers.map((p) => p.name), providers };
+  },
+
+  // 订阅用量/到期：拉取订阅 URL 读 subscription-userinfo 响应头（经 mihomo 出口），10 分钟缓存
+  async 'GET /api/subscriptions/userinfo'({ name }) {
+    name = String(name || '').trim();
+    const cp = readConfigProviders().find((x) => x.name === name);
+    if (!cp || !cp.url) return { ok: false, error: `未找到订阅源「${name || '?'}」或其 URL` };
+    const info = await fetchUserinfo(name, cp.url);
+    return { ok: true, name, userinfo: info };
+  },
+
+  // 删除订阅源：备份 → 删 provider 声明 + 缓存文件 → 热加载 → 重建注入组（失败回滚）
+  async 'POST /api/subscriptions/delete'({ name }) {
+    name = String(name || '').trim();
+    if (!name) return { ok: false, error: '请提供要删除的订阅源名称' };
+    if (name === 'default') return { ok: false, error: '内置默认源不可删除' };
+    const cfgProvs = readConfigProviders();
+    const cp = cfgProvs.find((x) => x.name === name);
+    if (!cp) return { ok: false, error: `config.yaml 中未找到订阅源「${name}」` };
+    const refs = findProviderRefs(name);
+    if (refs.length) return { ok: false, error: `订阅源「${name}」被主配置组 ${refs.join('、')} 引用，删除会导致配置无效；请先改这些组的 use` };
+    const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '');
+    const bak = `${mihomoCfg}.bak.${ts}`;
+    fs.copyFileSync(mihomoCfg, bak);
+    const p = await run('python3', [importScript], 30000, { CFG: mihomoCfg, URL: '', PNAME: name, PDEL: '1' });
+    if (p.code !== 0) {
+      try { fs.copyFileSync(bak, mihomoCfg); } catch {}
+      return { ok: false, error: '删除失败，已回滚到备份\n' + (p.stderr || p.stdout), rolledBack: true };
+    }
+    try { fs.rmSync(path.resolve(path.dirname(mihomoCfg), cp.path || `providers/${name}.yaml`), { force: true }); } catch {}
+    userinfoCache.delete(name);
+    let tail = '';
+    try {
+      const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
+      if (!rr.ok) tail = '；热加载失败：' + (rr.error ? '服务未运行？' : `HTTP ${rr.status}`);
+      else {
+        await sleep(3000);
+        try {
+          const gs = await syncSubscriptionGroups();
+          if (gs.ok === false) tail += `；订阅组同步失败：${gs.error}`;
+          else if (gs.changed) tail += '；已重建订阅组（清理被删源的组）';
+        } catch (e) { tail += `；订阅组同步异常：${e.message || e}`; }
+      }
+    } catch (e) { tail = '；热加载异常：' + (e.message || e); }
+    return { ok: true, message: `已删除订阅源「${name}」${tail}` };
   },
 
   // 刷新全部订阅（= clash update）：热加载 + 比对 providers 缓存文件变化来判定是否真的拉到

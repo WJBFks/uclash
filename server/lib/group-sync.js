@@ -155,6 +155,81 @@ export function configProviderNames() {
   return set;
 }
 
+/** 解析 config.yaml 的 proxy-providers 段 → [{ name, url, path, interval }]（订阅源权威列表）。 */
+export function readConfigProviders() {
+  const out = [];
+  let text;
+  try {
+    text = fs.readFileSync(mihomoCfg, 'utf8');
+  } catch {
+    return out;
+  }
+  let inPP = false;
+  let cur = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^proxy-providers:\s*$/.test(line)) { inPP = true; continue; }
+    if (inPP && /^\S/.test(line)) break;
+    if (!inPP) continue;
+    const nm = line.match(/^\s{2}([\w-]+):\s*(?:#.*)?$/);
+    if (nm) {
+      cur = { name: nm[1], url: '', path: '', interval: 0 };
+      out.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    const m = line.match(/^\s{4,}([\w-]+):\s*(.*)$/);
+    if (!m) continue;
+    let raw = m[2].trim();
+    let val = '';
+    if (raw.startsWith('"')) {
+      const end = raw.indexOf('"', 1);
+      val = end > 0 ? raw.slice(1, end) : raw.slice(1);
+    } else if (raw.startsWith("'")) {
+      const end = raw.indexOf("'", 1);
+      val = end > 0 ? raw.slice(1, end) : raw.slice(1);
+    } else {
+      val = raw.split(/\s+#/)[0].trim();
+    }
+    if (m[1] === 'url') cur.url = val;
+    else if (m[1] === 'path') cur.path = val;
+    else if (m[1] === 'interval') cur.interval = parseInt(val, 10) || 0;
+  }
+  return out;
+}
+
+/** 主配置（注入块之外）中 use: 了指定 provider 的组名列表——删除订阅源前的引用保护。 */
+export function findProviderRefs(providerName) {
+  let text;
+  try {
+    text = fs.readFileSync(mihomoCfg, 'utf8');
+  } catch {
+    return [];
+  }
+  // 剔除自动注入块（其 use: 引用由 group-sync 管理，删除后会随之重建）
+  const stripped = text.replace(new RegExp(`^${MARK_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$[\\s\\S]*?^${MARK_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm'), '');
+  const refs = [];
+  let inGroups = false;
+  let inUse = false;
+  let lastGroup = '';
+  for (const line of stripped.split(/\r?\n/)) {
+    if (/^proxy-groups:\s*$/.test(line)) { inGroups = true; inUse = false; continue; }
+    if (inGroups && /^\S/.test(line)) break;
+    if (!inGroups) continue;
+    const g = line.match(/^\s+-\s*name:\s*(.+)$/);
+    if (g) { lastGroup = unq(g[1]); inUse = false; continue; }
+    if (/^\s+use:\s*(?:#.*)?$/.test(line)) { inUse = true; continue; }
+    if (inUse) {
+      const it = line.match(/^\s+-\s*(.+)$/);
+      if (it) {
+        if (unq(it[1]) === providerName) refs.push(lastGroup);
+      } else {
+        inUse = false;
+      }
+    }
+  }
+  return [...new Set(refs)];
+}
+
 /** 收集所有 provider 缓存：{ 节点名 → provider 名 } + 全部组定义（带 provider 归属）。
  * provider 名从 config.yaml 的 proxy-providers 段（path 文件名）解析，回退为文件名。
  */

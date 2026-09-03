@@ -130,10 +130,10 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname.startsWith('/api/')) {
       const handler = handlers[`${req.method} ${u.pathname}`];
       if (!handler) return sendJson(res, 404, { ok: false, error: `unknown api: ${req.method} ${u.pathname}` });
-      let args = {};
+      let args = Object.fromEntries(u.searchParams); // query 参数（如 ?name=mysub）
       if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
         try {
-          args = await readBody(req);
+          args = { ...args, ...(await readBody(req)) };
         } catch (e) {
           return sendJson(res, 400, { ok: false, error: e.message });
         }

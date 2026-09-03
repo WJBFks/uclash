@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """mihomo 订阅源导入脚本（与 ~/.zshrc clash import 子命令逻辑一致）。
 环境变量: CFG=config.yaml 路径, URL=订阅URL, PNAME=新 provider 名（空=更新默认源 mysub）
+         PDEL=1 表示删除模式：从 proxy-providers 段移除 PNAME 的声明块
 成功 exit 0；失败非 0 且 stderr 输出原因（调用方负责回滚备份）。
 """
 import re, sys, os
@@ -8,6 +9,7 @@ import re, sys, os
 path = os.environ['CFG']
 url = os.environ['URL']
 name = os.environ.get('PNAME', '')
+delete = os.environ.get('PDEL', '') == '1'
 lines = open(path, encoding='utf-8').read().splitlines()
 
 # 1. 找到 proxy-providers 段内已有 provider 名（用于重名检测）
@@ -17,6 +19,36 @@ if i is None:
 end = i + 1
 while end < len(lines) and (lines[end].strip() == '' or lines[end].startswith(' ')):
     end += 1
+
+# 0. 删除模式：移除 PNAME 的声明块
+if delete:
+    if not name:
+        sys.exit('删除模式需要 PNAME')
+    j = None
+    for k in range(i + 1, end):
+        m = re.match(r'^  (\S[^:]*):\s*$', lines[k])
+        if m and m.group(1).strip('"\'') == name:
+            j = k
+            break
+    if j is None:
+        sys.exit(f'provider {name} 未找到')
+    k = j + 1
+    while k < end and not re.match(r'^  \S[^:]*:\s*$', lines[k]):
+        k += 1
+    del lines[j:k]
+    # 段空了要写成 {}（否则 mihomo 热加载会拒掉 null 段）
+    new_end = end - (k - j)
+    remaining = [l for l in lines[i + 1:new_end] if re.match(r'^  \S[^:]*:\s*$', l)]
+    if not remaining:
+        while i + 1 < new_end and lines[i + 1].strip() == '':
+            del lines[i + 1]
+            new_end -= 1
+        lines[i] = 'proxy-providers: {}'
+    out = '\n'.join(lines) + '\n'
+    open(path, 'w', encoding='utf-8').write(out)
+    print(f'[import] 已删除 provider {name}，配置已写入（旧版已备份为 .bak.*）')
+    sys.exit(0)
+
 providers = set()
 for l in lines[i + 1:end]:
     m = re.match(r'^  (\S[^:]*):$', l)

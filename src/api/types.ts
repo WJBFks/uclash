@@ -109,18 +109,36 @@ export interface ConnectionsData {
   connections: ConnectionItem[];
 }
 
-export interface ProviderInfo {
-  name?: string;
-  type?: string;
-  url?: string;
-  interval?: number;
-  count?: number;
-  [k: string]: unknown;
+export interface SubUserinfo {
+  upload: number | null;
+  download: number | null;
+  total: number | null;
+  expire: number | null;
+}
+
+export interface SubProviderCard {
+  name: string;
+  url: string;
+  interval: number;
+  nodes: number;
+  updated: number;
+  groupCount: number;
+  ruleCount: number;
+  userinfo: SubUserinfo | null;
 }
 
 export interface SubscriptionsData {
   subscriptions: string[];
-  providers?: Record<string, ProviderInfo> | ProviderInfo[];
+  providers: SubProviderCard[];
+}
+
+export interface SubUserinfoData {
+  name: string;
+  userinfo: SubUserinfo | null;
+}
+
+export interface SubDeleteData {
+  message: string;
 }
 
 export interface SubRefreshItem {

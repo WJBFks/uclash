@@ -2,119 +2,279 @@
 import { onMounted, ref } from 'vue';
 import { api } from '@/api/client';
 import { useToast } from '@/composables/useToast';
-import type { SubscriptionsData, SubRefreshData, ImportData } from '@/api/types';
+import type {
+  ImportData,
+  SubDeleteData,
+  SubProviderCard,
+  SubRefreshData,
+  SubUserinfo,
+  SubUserinfoData,
+} from '@/api/types';
 
 const toast = useToast();
 
-const subNames = ref<string[]>([]);
+const providers = ref<SubProviderCard[]>([]);
+const loading = ref(true);
 const refreshing = ref(false);
-const refreshResults = ref<SubRefreshData['results'] | null>(null);
-const refreshSummary = ref('');
-const groupsInfo = ref<SubRefreshData['groups'] | null>(null);
+const lastSummary = ref('');
+const usageLoading = ref<Set<string>>(new Set());
 
 const impUrl = ref('');
 const impName = ref('');
-const impReload = ref(true);
 const impBusy = ref(false);
-const impResult = ref('');
-const impError = ref('');
-const impBackup = ref('');
+const impMsg = ref<{ ok: boolean; text: string } | null>(null);
 
 async function loadSubs() {
   try {
-    const d = await api<SubscriptionsData>('/subscriptions');
-    subNames.value = d.subscriptions;
+    const d = await api<{ providers: SubProviderCard[] }>('/subscriptions');
+    providers.value = d.providers ?? [];
   } catch {
-    subNames.value = [];
-  }
-}
-
-async function refreshSubs() {
-  refreshing.value = true;
-  refreshResults.value = null;
-  refreshSummary.value = '';
-  try {
-    const d = await api<SubRefreshData>('/subscriptions/refresh', { method: 'POST', timeout: 120000 });
-    refreshResults.value = d.results;
-    refreshSummary.value = d.summary;
-    groupsInfo.value = d.groups ?? null;
-    toast(d.summary);
-    loadSubs();
-  } catch (e) {
-    refreshSummary.value = e instanceof Error ? e.message : String(e);
+    providers.value = [];
   } finally {
-    refreshing.value = false;
+    loading.value = false;
   }
 }
 
-async function doImport() {
-  const url = impUrl.value.trim();
-  const name = impName.value.trim();
-  if (!url) return toast('请填写订阅 URL', true);
-  const what = name ? `新增订阅源「${name}」` : '更新默认订阅源 mysub';
-  if (!confirm(`确认${what}？\n\nURL: ${url}\n\n将写入 ~/.config/mihomo/config.yaml（自动备份 .bak.*，失败自动回滚），随后热加载。`)) return;
-  impBusy.value = true;
-  impResult.value = '';
-  impError.value = '写入配置中…';
-  impBackup.value = '';
+/** 用量/到期信息：先取列表返回的缓存值，缺失时懒加载（后端拉取订阅 URL 响应头，10 分钟缓存） */
+async function loadUserinfo(p: SubProviderCard, force = false) {
+  if (p.userinfo && !force) return;
+  usageLoading.value.add(p.name);
   try {
-    const d = await api<ImportData>('/import', { method: 'POST', body: { url, provider: name, reload: impReload.value }, timeout: 120000 });
-    impError.value = '';
-    impResult.value = d.message;
-    impBackup.value = d.backup || '';
+    const qs = force ? 'force=1' : '';
+    const d = await api<SubUserinfoData>(
+      `/subscriptions/userinfo?name=${encodeURIComponent(p.name)}${qs}`,
+      { timeout: 25000 },
+    );
+    const cur = providers.value.find((x) => x.name === p.name);
+    if (cur) cur.userinfo = d.userinfo;
+  } catch {
+    // 拉取失败（订阅不可达等）：不显示用量，不打断页面
+  } finally {
+    usageLoading.value.delete(p.name);
+  }
+}
+
+async function doImport(mode: 'update' | 'create') {
+  const url = impUrl.value.trim();
+  if (!url) return toast('请先填写订阅链接', true);
+  const name = impName.value.trim();
+  if (mode === 'create' && !name) return toast('新建需填写 provider 名', true);
+  const what = mode === 'create' ? `新增订阅源「${name}」` : '更新默认订阅源 mysub';
+  if (!confirm(`确认${what}？\n\nURL: ${url}\n\n将写入 ~/.config/mihomo/config.yaml（自动备份，失败自动回滚），随后热加载。`)) return;
+  impBusy.value = true;
+  impMsg.value = { ok: true, text: '写入配置中…' };
+  try {
+    const d = await api<ImportData>('/import', {
+      method: 'POST',
+      body: { url, provider: mode === 'create' ? name : '', reload: true },
+      timeout: 120000,
+    });
+    impMsg.value = { ok: true, text: d.message };
     toast(d.message);
     impUrl.value = '';
-    impName.value = '';
-    loadSubs();
+    if (mode !== 'create') impName.value = '';
+    await loadSubs();
+    for (const p of providers.value) await loadUserinfo(p, true);
   } catch (e) {
-    impResult.value = '';
-    impError.value = e instanceof Error ? e.message : String(e);
+    impMsg.value = { ok: false, text: e instanceof Error ? e.message : String(e) };
   } finally {
     impBusy.value = false;
   }
 }
 
-onMounted(loadSubs);
+async function refreshSubs() {
+  refreshing.value = true;
+  lastSummary.value = '';
+  try {
+    const d = await api<SubRefreshData>('/subscriptions/refresh', { method: 'POST', timeout: 120000 });
+    lastSummary.value = d.summary;
+    toast(d.summary);
+    await loadSubs();
+    for (const p of providers.value) await loadUserinfo(p, true);
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e), true);
+  } finally {
+    refreshing.value = false;
+  }
+}
+
+async function copyLink(url: string, from: string) {
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast(`已复制「${from}」的订阅链接`);
+  } catch {
+    // 非安全上下文等场景回退
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      toast(`已复制「${from}」的订阅链接`);
+    } catch {
+      toast('复制失败', true);
+    }
+    document.body.removeChild(ta);
+  }
+}
+
+async function delSub(p: SubProviderCard) {
+  if (!confirm(`确认删除订阅源「${p.name}」？\n\n将从 config.yaml 移除其声明（自动备份）、删除本地缓存文件并热加载；引用它的订阅组会被同步清理。`)) return;
+  try {
+    const d = await api<SubDeleteData>('/subscriptions/delete', { method: 'POST', body: { name: p.name }, timeout: 120000 });
+    toast(d.message);
+    await loadSubs();
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e), true);
+  }
+}
+
+// ---- 展示辅助 ----
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url || '（无链接）';
+  }
+}
+
+function relTime(ts: number): string {
+  if (!ts) return '尚未更新';
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return '刚刚更新';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function fmtBytes(n: number | null | undefined): string {
+  if (n == null) return '?';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${v.toFixed(2)}${units[i]}`;
+}
+
+function usageOf(p: SubProviderCard): { usedText: string; pct: number; expire: string } | null {
+  const u: SubUserinfo | null = p.userinfo;
+  if (!u) return null;
+  const used = (u.upload ?? 0) + (u.download ?? 0);
+  const pct = u.total ? Math.max(0, Math.min(100, (used / u.total) * 100)) : 0;
+  return {
+    usedText: `${fmtBytes(used)} / ${fmtBytes(u.total)}`,
+    pct,
+    expire: u.expire ? new Date(u.expire * 1000).toLocaleDateString() : '',
+  };
+}
+
+function intervalText(iv: number): string {
+  if (!iv) return '';
+  const h = iv / 3600;
+  return Number.isInteger(h) ? `每 ${h}h 自动更新` : `每 ${Math.round(iv / 60)}min 自动更新`;
+}
+
+onMounted(async () => {
+  await loadSubs();
+  for (const p of providers.value) await loadUserinfo(p);
+});
 </script>
 
 <template>
-  <div class="card">
-    <h2>订阅管理</h2>
-    <div class="row">
-      <button class="primary" :disabled="refreshing" @click="refreshSubs">{{ refreshing ? '刷新中…' : '刷新全部订阅' }}</button>
-      <span class="muted">{{ subNames.length ? '订阅源: ' + subNames.join('、') : '未配置订阅源' }}</span>
-    </div>
-    <div class="sub-result">
-      <span v-if="refreshing" class="muted">刷新中（热加载 + 验证缓存变化 + 同步订阅组，最多约 30 秒）…</span>
-      <template v-else-if="refreshResults">
-        <div v-for="r in refreshResults" :key="r.name" :class="r.ok ? 'ok' : 'fail'">
-          {{ r.ok ? '✓' : '✗' }} {{ r.name }}{{ r.error ? ` — ${r.error}` : '' }}
-        </div>
-        <div v-if="groupsInfo" :class="groupsInfo.ok === false ? 'fail' : 'ok'">
-          {{ groupsInfo.ok === false ? '✗' : '✓' }} {{ groupsInfo.error || (groupsInfo.changed ? `已激活 ${groupsInfo.injected} 个订阅组` : '订阅组无变化') }}
-        </div>
-        <div class="muted">{{ refreshSummary }}</div>
-      </template>
-      <span v-else-if="refreshSummary" class="fail">{{ refreshSummary }}</span>
+  <div>
+    <!-- 顶部：导入订阅源（Verge 风格：链接输入 + 导入 + 新建） -->
+    <div class="card">
+      <h2>订阅管理 <span class="count">{{ providers.length }}</span></h2>
+      <div class="si-row">
+        <input
+          v-model="impUrl"
+          type="url"
+          class="si-input"
+          placeholder="订阅文件链接（https://…）"
+          @keyup.enter="doImport(impName.trim() ? 'create' : 'update')"
+        />
+        <button class="btn" :disabled="!impUrl.trim() || impBusy" title="导入：更新默认订阅源 mysub" @click="doImport('update')">
+          导入
+        </button>
+        <button class="primary" :disabled="impBusy" title="新建订阅源（需填写下方 provider 名）" @click="doImport('create')">
+          新建
+        </button>
+      </div>
+      <div class="si-row">
+        <input
+          v-model="impName"
+          type="text"
+          class="si-input"
+          placeholder="新建订阅源的 provider 名（留空时「导入」= 更新默认源 mysub）"
+        />
+        <button class="btn" :disabled="refreshing" @click="refreshSubs">{{ refreshing ? '刷新中…' : '⟳ 刷新全部' }}</button>
+      </div>
+      <div v-if="impMsg" :class="['si-msg', impMsg.ok ? 'ok' : 'fail']">{{ impMsg.text }}</div>
+      <div v-if="lastSummary && !refreshing" class="si-msg muted">{{ lastSummary }}</div>
     </div>
 
-    <hr class="sep" />
-    <div class="sub-title">导入订阅源（写入 config.yaml，自动备份 + 热加载，失败自动回滚）</div>
-    <div class="form-row">
-      <input type="url" v-model="impUrl" placeholder="订阅 URL，如 https://example.com/sub?token=…" />
-      <input type="text" v-model="impName" placeholder="provider 名（留空 = 更新默认源 mysub）" />
+    <!-- 订阅源卡片 -->
+    <div v-if="loading" class="card">
+      <div class="node-empty">加载中…</div>
     </div>
-    <div class="row import-row">
-      <button :disabled="impBusy" @click="doImport">{{ impBusy ? '导入中…' : '导入并热加载' }}</button>
-      <label class="chk">
-        <input type="checkbox" v-model="impReload" /> 热加载（PUT /configs）
-      </label>
+    <div v-else-if="!providers.length" class="card">
+      <div class="node-empty">未配置订阅源</div>
     </div>
-    <div class="sub-result">
-      <span v-if="impResult" class="ok">{{ impResult }}</span>
-      <span v-if="impBackup" class="muted">备份: {{ impBackup }}</span>
-      <span v-if="impError" class="fail">{{ impError }}</span>
+    <div v-else class="sub-grid">
+      <div v-for="p in providers" :key="p.name" class="card sub-card">
+        <div class="sc-head">
+          <span class="sc-icon">📄</span>
+          <span class="sc-name" :title="p.name">{{ p.name }}</span>
+          <span class="sc-spacer" />
+          <button
+            class="icon-btn"
+            :disabled="refreshing"
+            title="刷新订阅源（mihomo 无单源刷新端点，将刷新全部订阅）"
+            @click="refreshSubs()"
+          >
+            ⟳
+          </button>
+          <button class="icon-btn" title="复制订阅链接" @click="copyLink(p.url, p.name)">⧉</button>
+          <button class="icon-btn danger" title="删除订阅源" @click="delSub(p)">✕</button>
+        </div>
+        <div class="sc-meta">
+          <span class="sc-host" :title="p.url">{{ hostOf(p.url) }}</span>
+          <span class="sc-rel">{{ relTime(p.updated) }}</span>
+        </div>
+        <div v-if="usageOf(p)" class="sc-usage">
+          <div class="sc-usage-row">
+            <span>{{ usageOf(p)!.usedText }}</span>
+            <span v-if="usageOf(p)!.expire" class="sc-expire">{{ usageOf(p)!.expire }}</span>
+          </div>
+          <div class="sc-bar">
+            <div class="sc-bar-fill" :class="{ warn: usageOf(p)!.pct > 80 }" :style="{ width: usageOf(p)!.pct + '%' }" />
+          </div>
+        </div>
+        <div v-else-if="usageLoading.has(p.name)" class="sc-usage">
+          <div class="muted">用量加载中…</div>
+        </div>
+        <div class="sc-foot">
+          <span>{{ p.nodes }} 个节点</span>
+          <span v-if="p.groupCount"> · {{ p.groupCount }} 组</span>
+          <span v-if="p.ruleCount"> · {{ p.ruleCount }} 条规则</span>
+          <span v-if="intervalText(p.interval)" class="muted"> · {{ intervalText(p.interval) }}</span>
+        </div>
+      </div>
     </div>
-    <div class="hint">注意：导入新 provider 会修改 config.yaml；更新默认源不影响现有节点名，新增源需 mihomo 配置中已声明对应 provider。</div>
+
+    <!-- 订阅组自动同步说明 -->
+    <div class="card">
+      <h2>订阅组自动同步</h2>
+      <p class="muted">
+        mihomo 的 proxy-providers 只导入订阅里的节点，不导入其代理组。刷新/导入订阅时，本系统会自动把订阅
+        yaml 中定义的 proxy-groups 注入主配置并热加载生效（写前自动备份，热加载失败自动回滚，各组当前选择在
+        加载后恢复）。各组详情见「代理组」页。
+      </p>
+    </div>
   </div>
 </template>
