@@ -1,57 +1,66 @@
 # clash-web
 
-`~/.zshrc` 中 `clash` 命令集（mihomo 代理管理）的可交互 Web UI。
-零依赖：原生 Node `node:http` 后端 + 单文件前端，统一监听 **15924** 端口。
+`~/.zshrc` 中 `clash` 命令集（mihomo 代理管理）的 Web UI。
+
+**v2 架构**：Vue3 + Vite + TS + SCSS 前端 / 零运行时依赖 Node 后端（ESM），统一监听 **15924** 端口。
 
 ## 启动
 
 ```bash
-clash-web          # 已写入 ~/.zshrc：端口空闲则拉起 node server.js，已有则直接提示地址
-# 或手动:
-node /home/jiaxingwang/main/workspace/agent/clash-web/server.js
+# 开发模式（vite 5173 + node server 15924 并行）
+npm run dev
+# 浏览器打开 http://localhost:15924 —— 后端自动把页面请求转发到 vite dev server（带 HMR）
+# 也可直接开 http://localhost:5173（/api 由 vite 代理到 15924）
+
+# 生产模式（构建后由后端直接托管 dist/）
+npm run build
+npm start
 ```
 
-浏览器打开 <http://localhost:15924>。停止：`pkill -f "clash-web/server.js"`。
+停止：`pkill -f "clash-web/server/index.js"`（dev 模式 `pkill -f "clash-web.*vite\|clash-web/server"` 或 Ctrl+C）。
+
+其他脚本：`npm run dev:web`（仅前端）、`npm run dev:api`（仅后端）、`npm run typecheck`（vue-tsc 类型检查）。
+
+## 架构
+
+```
+server/                # 零运行时依赖 Node 后端（ESM，仅 node: 内置模块）
+├── index.js           # HTTP 服务：/api/* 路由分发 + 前端（dist/ 静态托管 或 转发 vite dev server）
+├── routes.js          # 13 个 /api/* 路由处理器（键 = "METHOD /path"，与 zshrc clash 命令集对应）
+├── mihomo.js          # mihomo 交互原语：run/httpJson/fetchExitIp + 2s 流量采样器 + providers 快照
+├── config.js          # 常量（端口/路径/代理标记文件内容）
+└── lib/import-sub.py  # 订阅源导入脚本（改 config.yaml：更新 mysub 或新增 provider，含回滚由 server 负责）
+
+src/                   # Vue3 + TS + SCSS 前端
+├── api/               # client.ts（fetch 封装 + 超时） / types.ts（API 类型）
+├── components/        # StatusCard / ServicePanel / TrafficChart / NodePanel /
+│                      # ConnectionsPanel / SubscriptionPanel / ToastHost
+├── composables/       # useStatus（8s 轮询）/ useToast（单例事件总线 toast）
+├── styles/            # _variables.scss（主题变量）+ global.scss（基础样式，迁移自原单文件 CSS）
+└── utils/format.ts    # bytes 格式化
+```
+
+**前端分发策略**（server/index.js）：`dist/` 存在 → 静态托管（生产）；不存在且 `CW_DEV=1`（`npm run dev` 自动设置）→ 转发到 vite dev server `127.0.0.1:5173`。开发时浏览器统一开 **15924**，HMR websocket 由 `hmr.clientPort=5173` 直连、不经后端。
 
 ## 功能（对应 clash 子命令）
 
-| UI 区块 | 对应命令 | 实现 |
+| UI 区块 | 对应命令 | API |
 |---|---|---|
-| 状态总览 | `status` | systemctl / ip / mihomo API / 直连 ipify 出口 IP |
-| 全局服务 启动/停止/重启 | `start/stop/restart` | `systemctl --user` |
-| 终端代理开关 | `on/off` | 创建/删除 `~/.clash_proxy_on`（内容与 zshrc 一致） |
-| 节点切换 | `list/set` | mihomo API `127.0.0.1:9090/proxies/PROXY`，3s 自动刷新 + 搜索 |
-| 节点延迟测试 | —（增强） | 可自定义测试链接（默认 google 204，localStorage 持久化）；后端走 mihomo 原生 `healthcheck` 端点 24 并发、单项 10s 超时，**不切换当前节点、互不干扰**（不依赖切选择器，坏节点标红不影响其余） |
-| 实时流量 | —（增强） | mihomo `/traffic` 后端 2s 采样，SVG 折线（最近 4 分钟） |
-| 连接列表 | —（增强） | mihomo `/connections`，2s 轮询，可单连接关闭 |
-| 刷新订阅 | `update` | 逐个 PUT `/subscriptions/<name>` |
-| 导入订阅源 | `import` | 备份 config.yaml → 更新 mysub / 新增 provider 并切组引用 → PUT `/configs` 热加载；失败回滚（`lib/import-sub.py` 与 zshrc 逻辑一致） |
-| 版本 | `version` | `mihomo -v` |
+| 状态总览 | `status` | `GET /api/status`（systemctl / ip / mihomo API / ipify 出口 IP） |
+| 全局服务 启动/停止/重启 | `start/stop/restart` | `POST /api/service` |
+| 终端代理开关 | `on/off` | `POST /api/proxy-env`（写/删 `~/.clash_proxy_on`，新终端生效） |
+| 节点列表 + 切换 | `list/set` | `GET /api/proxies` / `POST /api/proxy-set` |
+| 节点延迟测试 | —（扩展） | `POST /api/proxy-test`（mihomo 原生 healthcheck，全并发、单项 10s 超时，不切选择器） |
+| 订阅列表 / 刷新全部订阅 | `update` | `GET /api/subscriptions` / `POST /api/subscriptions/refresh` |
+| 导入订阅源 | `import` | `POST /api/import`（备份 → 改配置 → 热加载，失败回滚） |
+| 实时流量 | —（扩展） | `GET /api/traffic`（后端 2s 采样、120 点环形缓冲） |
+| 连接列表 / 关闭 | —（扩展） | `GET /api/connections` / `DELETE /api/connections` |
 
-## 结构
+## 实现要点
 
-```
-server.js          后端：HTTP 服务 + 全部 /api/* 路由 + 流量采样
-public/index.html  前端单文件（内联 CSS/JS，浅色简洁风）
-lib/import-sub.py  订阅源导入脚本（zshrc 同款逻辑）
-```
-
-## API 一览
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/status` | 服务/TUN/当前节点/终端代理/出口 IP/版本 |
-| POST | `/api/service` | `{action: start\|stop\|restart}` |
-| POST | `/api/proxy-env` | `{on: bool}` 终端代理开关 |
-| GET | `/api/proxies` | 节点列表 + 当前节点 |
-| POST | `/api/proxy-set` | `{name}` 切换节点 |
-| POST | `/api/proxy-test` | `{url?, nodes}` 节点延迟测试：mihomo 原生 healthcheck、24 并发、单项 10s 超时、不切换当前节点 |
-| GET | `/api/subscriptions` | 订阅源列表 |
-| POST | `/api/subscriptions/refresh` | 刷新全部订阅 |
-| POST | `/api/import` | `{url, provider?, reload?}` 导入订阅源 |
-| GET | `/api/traffic` | 流量历史（2s 采样 ×120 点）+ 累计 |
-| GET | `/api/connections` | 当前连接 |
-| DELETE | `/api/connections` | `{id}` 关闭连接 |
-| GET | `/api/version` | mihomo 版本 |
-
-统一返回 `{ ok, data }`；失败 `ok=false` 且 data 内含 `error`。
+- **流量**：后端常驻 2s 采样 mihomo `/traffic`（该端点高负载下单次要 12s+，逐次转发会堵死 API 队列），前端 2s 只读内存缓存。
+- **节点测试**：走 mihomo 原生 `/providers/proxies/{p}/{n}/healthcheck`，不切换当前选择器、互不干扰；节点归属 provider 由 `/providers/proxies` 反查。
+- **订阅刷新 / 导入的热加载**：`PUT /configs` 必须带 `{"path": ...}` body（mihomo v1.19 对空 body 返回 400）；热加载后等 6s 并比对 `~/.config/mihomo/providers/*.yaml` 的 mtime，区分「已更新 / 无变化（源不可达，仍在用旧节点）/ 服务未运行 / 请求被拒」——API 调通 ≠ 订阅真的拉到。
+- **订阅列表**：mihomo v1.19 无 `/subscriptions` 端点（clash premium 功能），`GET /api/subscriptions` 改走 `/providers/proxies` 取 provider 名。
+- **节点名保留原样**：部分节点名含前导/尾随空格，trim 后 PUT 切换会 400。
+- **零运行时依赖**：后端仅用 node: 内置模块；前端依赖（vue/vite 等）均为 devDependency，构建产物自包含。

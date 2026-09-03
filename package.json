@@ -1,10 +1,28 @@
 {
   "name": "clash-web",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "mihomo 代理管理 Web UI（对应 ~/.zshrc 的 clash 命令集），零依赖 Node 后端 + 单文件前端，监听 15924 端口",
-  "main": "server.js",
+  "type": "module",
+  "description": "mihomo 代理管理 Web UI（Vue3 + Vite + TS + SCSS 前端 / 零依赖 Node 后端），监听 15924 端口",
   "scripts": {
-    "start": "node server.js"
+    "dev": "concurrently -k -n web,api -c blue,green \"vite\" \"CW_DEV=1 node server/index.js\"",
+    "dev:web": "vite",
+    "dev:api": "CW_DEV=1 node server/index.js",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "start": "node server/index.js",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "vue": "^3.5.42"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "concurrently": "^10.0.5",
+    "sass": "^1.103.1",
+    "typescript": "~5.9",
+    "vite": "^8.2.2",
+    "vue-tsc": "^3.3.11"
   }
 }

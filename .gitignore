@@ -6,3 +6,6 @@
 
 # 依赖
 node_modules/
+
+# 前端构建产物
+dist/
