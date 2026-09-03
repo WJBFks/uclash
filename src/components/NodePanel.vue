@@ -440,7 +440,7 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="group-rules">
+        <div v-if="g.name !== 'GLOBAL'" class="group-rules">
           <div class="gr-head" @click="toggleRules(g.name)">
             <span class="gr-title">路由规则</span>
             <span :class="['gr-badge', groupRuleState(g).cls]">{{ groupRuleState(g).label }}</span>
