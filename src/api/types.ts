@@ -4,6 +4,7 @@ export interface StatusData {
   service: string;
   tun: string | null;
   node: string | null;
+  mode?: string | null;
   proxyOn: boolean;
   exitIp: string;
   version: string | null;
@@ -25,6 +26,8 @@ export interface ProxiesData {
   now: string;
   all: string[];
   meta?: Record<string, { type?: string; udp?: boolean }>;
+  mode?: string;
+  global?: { now: string; all: string[] };
 }
 
 export interface ProxySetResult {

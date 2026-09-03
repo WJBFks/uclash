@@ -25,6 +25,11 @@ const svcText = computed(() => {
 const timeText = computed(() =>
   props.lastUpdated ? `· 更新于 ${props.lastUpdated.toLocaleTimeString('zh-CN', { hour12: false })}` : ''
 );
+const MODE_TEXT = { rule: '规则', global: '全局', direct: '直连' };
+const modeText = computed(() => {
+  const m = props.status?.mode;
+  return m ? (MODE_TEXT[m] || m) : '…';
+});
 </script>
 
 <template>
@@ -45,6 +50,10 @@ const timeText = computed(() =>
       <div class="item">
         <div class="k">当前节点</div>
         <div class="v">{{ status?.node || '未知' }}</div>
+      </div>
+      <div class="item">
+        <div class="k">模式</div>
+        <div class="v">{{ modeText }}</div>
       </div>
       <div class="item">
         <div class="k">终端代理</div>

@@ -14,13 +14,14 @@ const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
 const handlers = {
   // 状态总览（= clash status）
   async 'GET /api/status'() {
-    const [svc, tun, proxyR, proxyOn, exitIp, verR] = await Promise.all([
+    const [svc, tun, proxyR, proxyOn, exitIp, verR, cfgR] = await Promise.all([
       run('systemctl', ['--user', 'is-active', 'mihomo'], 10000),
       run('bash', ['-c', "ip -br link 2>/dev/null | awk '{print $1}' | grep -E '^(Meta|tun)' | head -1"], 10000),
       httpJson(mihomoApi + '/proxies/PROXY'),
       Promise.resolve(fs.existsSync(proxyOnFile)),
       fetchExitIp(),
       run(mihomoBin, ['-v'], 10000),
+      httpJson(mihomoApi + '/configs'),
     ]);
     return {
       service: svc.code === 0 && svc.stdout === 'active' ? 'active' : svc.stdout || 'unknown',
@@ -30,6 +31,7 @@ const handlers = {
       exitIp,
       version: verR.code === 0 && verR.stdout ? verR.stdout.split('\n')[0] : null,
       mihomoAlive: Boolean(proxyR.ok && proxyR.json),
+      mode: cfgR.ok && cfgR.json ? (cfgR.json.mode || 'rule') : null,
     };
   },
 
@@ -68,6 +70,12 @@ const handlers = {
     if (!r.ok || !r.json) return { ok: false, error: '获取节点列表失败（mihomo 服务未运行？）' };
     // 注意：节点名保留原样（部分节点名含前导/尾随空格，trim 后 PUT 会 400）
     const all = (r.json.all || []).map((n) => String(n));
+    // 全局模式走 GLOBAL 组：一并返回其成员与当前选择
+    let globalGroup = { now: '', all: [] };
+    try {
+      const gR = await httpJson(mihomoApi + '/proxies/GLOBAL');
+      if (gR.ok && gR.json) globalGroup = { now: (gR.json.now || '').trim(), all: (gR.json.all || []).map((n) => String(n)) };
+    } catch {}
     // 顶层 /proxies/PROXY 只有名字，协议/UDP 详情需逐 provider 取
     const meta = {};
     const GROUP_TYPES = new Set(['Selector', 'URLTest', 'Fallback', 'LoadBalance', 'Direct', 'Reject', 'Pass', 'PassRule', 'RejectDrop', 'Compatible']);
@@ -86,15 +94,18 @@ const handlers = {
         } catch {}
       }
     }
-    return { ok: true, now: (r.json.now || '').trim(), all, meta };
+    const modeR = await httpJson(mihomoApi + '/configs');
+    const mode = modeR.ok && modeR.json ? (modeR.json.mode || 'rule') : 'rule';
+    return { ok: true, now: (r.json.now || '').trim(), all, meta, mode, global: globalGroup };
   },
 
-  // 切换节点（= clash set）
-  async 'POST /api/proxy-set'({ name }) {
+  // 切换节点（= clash set）；group 默认 PROXY，全局模式下前端传 GLOBAL
+  async 'POST /api/proxy-set'({ name, group }) {
     if (!name || typeof name !== 'string') return { ok: false, error: '节点名不能为空' };
-    const putR = await httpJson(mihomoApi + '/proxies/PROXY', 'PUT', { name });
-    if (!putR.ok) return { ok: false, error: '切换失败（mihomo API 无响应）' };
-    return { ok: true, message: `已切换到: ${name}` };
+    const g = typeof group === 'string' && group ? group : 'PROXY';
+    const putR = await httpJson(mihomoApi + '/proxies/' + encodeURIComponent(g), 'PUT', { name });
+    if (!putR.ok) return { ok: false, error: `切换失败（组 ${g}，mihomo API 无响应或名字无效）` };
+    return { ok: true, message: `组 ${g} 已切换到: ${name}` };
   },
 
   // 节点延迟测试：mihomo 原生 healthcheck 端点，全并发，不切换当前选择器、互不干扰
@@ -276,9 +287,14 @@ const handlers = {
 
   async 'POST /api/mode'({ mode }) {
     if (!['rule', 'global', 'direct'].includes(mode)) return { ok: false, error: 'invalid mode' };
-    const r = await httpJson(mihomoApi + '/configs', 'PUT', { mode });
+    // mihomo v1.19：切模式必须用 PATCH /configs（运行时生效）；
+    // PUT /configs 会触发完整配置重载，mode 会被 config.yaml 里的值覆盖回原状（v1.19 实测）
+    const r = await httpJson(mihomoApi + '/configs', 'PATCH', { mode });
     if (!r.ok) return { ok: false, error: '切换失败（mihomo API 无响应）' };
+    const chk = await httpJson(mihomoApi + '/configs');
+    const actual = chk.ok && chk.json ? chk.json.mode : null;
     const label = { rule: '规则', global: '全局', direct: '直连' }[mode];
+    if (actual !== mode) return { ok: false, error: `切换到${label}模式未生效（当前仍为: ${actual || '未知'}）` };
     return { ok: true, message: `已切换到${label}模式` };
   },
 

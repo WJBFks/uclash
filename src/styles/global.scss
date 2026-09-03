@@ -355,6 +355,16 @@ code {
   }
 }
 
+.mode-note {
+  font-size: 12.5px;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+
+  &.direct { background: $amber-soft; color: $amber; }
+  &.global { background: $accent-soft; color: $accent; }
+}
+
 .np-toolbar {
   margin-bottom: 12px;
 
