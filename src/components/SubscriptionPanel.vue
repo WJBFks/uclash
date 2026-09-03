@@ -4,6 +4,7 @@ import { api } from '@/api/client';
 import { useToast } from '@/composables/useToast';
 import type {
   ImportData,
+  SubActivateData,
   SubDeleteData,
   SubProviderCard,
   SubRefreshData,
@@ -23,6 +24,7 @@ const impUrl = ref('');
 const impName = ref('');
 const impBusy = ref(false);
 const impMsg = ref<{ ok: boolean; text: string } | null>(null);
+const activating = ref('');
 
 async function loadSubs() {
   try {
@@ -130,6 +132,23 @@ async function delSub(p: SubProviderCard) {
   }
 }
 
+/** 注入主配置（独占激活）：让 PROXY/Auto 等主配置组的 use 引用指向该订阅源 */
+async function activate(p: SubProviderCard) {
+  if (p.active) return;
+  if (!confirm(`确认将订阅源「${p.name}」注入主配置？\n\n会把主配置组 PROXY/Auto 的 use 引用切到它${p.declared ? '' : '（并补写 config.yaml 声明）'}（自动备份，失败自动回滚），随后热加载并同步订阅组。\n\n当前激活的源将转为待机（声明与缓存保留，随时可再激活）。`)) return;
+  activating.value = p.name;
+  try {
+    const d = await api<SubActivateData>('/subscriptions/activate', { method: 'POST', body: { name: p.name }, timeout: 120000 });
+    toast(d.message);
+    await loadSubs();
+    for (const x of providers.value) if (x.active) await loadUserinfo(x, true);
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e), true);
+  } finally {
+    activating.value = '';
+  }
+}
+
 // ---- 展示辅助 ----
 function hostOf(url: string): string {
   try {
@@ -226,10 +245,12 @@ onMounted(async () => {
       <div class="node-empty">未配置订阅源</div>
     </div>
     <div v-else class="sub-grid">
-      <div v-for="p in providers" :key="p.name" class="card sub-card">
+      <div v-for="p in providers" :key="p.name" :class="['card', 'sub-card', { active: p.active }]">
         <div class="sc-head">
           <span class="sc-icon">📄</span>
           <span class="sc-name" :title="p.name">{{ p.name }}</span>
+          <span v-if="p.active" class="sc-badge on">使用中</span>
+          <span v-else-if="!p.declared" class="sc-badge">未声明</span>
           <span class="sc-spacer" />
           <button
             class="icon-btn"
@@ -264,6 +285,9 @@ onMounted(async () => {
           <span v-if="p.ruleCount"> · {{ p.ruleCount }} 条规则</span>
           <span v-if="intervalText(p.interval)" class="muted"> · {{ intervalText(p.interval) }}</span>
         </div>
+        <button v-if="!p.active" class="btn inject-btn" :disabled="activating === p.name" @click="activate(p)">
+          {{ activating === p.name ? '激活中…' : '⚡ 注入主配置（设为当前激活源）' }}
+        </button>
       </div>
     </div>
 

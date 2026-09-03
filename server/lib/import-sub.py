@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """mihomo 订阅源导入脚本（与 ~/.zshrc clash import 子命令逻辑一致）。
 环境变量: CFG=config.yaml 路径, URL=订阅URL, PNAME=新 provider 名（空=更新默认源 mysub）
-         PDEL=1 表示删除模式：从 proxy-providers 段移除 PNAME 的声明块
+         PDEL=1      删除模式：从 proxy-providers 段移除 PNAME 的声明块
+         PCREATE=1   仅声明模式：向 proxy-providers 段插入 PNAME（不切换 use 引用）
+         PSWITCH=1   切换模式：把注入块之外所有 use: 列表指向 PNAME（独占激活语义）
 成功 exit 0；失败非 0 且 stderr 输出原因（调用方负责回滚备份）。
 """
 import re, sys, os
@@ -54,6 +56,64 @@ for l in lines[i + 1:end]:
     m = re.match(r'^  (\S[^:]*):$', l)
     if m:
         providers.add(m.group(1).strip('"' + chr(39)))
+
+create_only = os.environ.get('PCREATE', '') == '1'
+switch_only = os.environ.get('PSWITCH', '') == '1'
+
+# 注入模式：PCREATE 补声明（未声明的源）+ PSWITCH 把 use 引用切到目标源
+if create_only or switch_only:
+    if not name:
+        sys.exit('PCREATE/PSWITCH 模式需要 PNAME')
+    if create_only:
+        if name in providers:
+            sys.exit(f'provider 名 {name} 已存在')
+        if not url:
+            sys.exit('PCREATE 模式需要 URL')
+        new = [f'  {name}:', '    type: http', f'    url: "{url}"', '    interval: 86400', f'    path: ./providers/{name}.yaml']
+        lines = lines[:end] + new + [''] + lines[end:]
+    if switch_only:
+        # 注入块（# >>> ... # <<<）由 clash-web 管理，跳过；其余 use: 列表独占指向 name
+        switched = 0
+        k = 0
+        in_block = False
+        while k < len(lines):
+            l = lines[k]
+            t = l.strip()
+            if t.startswith('# >>>'):
+                in_block = True
+                k += 1
+                continue
+            if in_block and t.startswith('# <<<'):
+                in_block = False
+            if not in_block:
+                m2 = re.match(r'^\s+use:\s*$', l)
+                if m2:
+                    idx = k + 1
+                    items = []
+                    while idx < len(lines):
+                        mm = re.match(r'^(\s+)-\s*(.+?)\s*$', lines[idx])
+                        if not mm:
+                            break
+                        items.append([idx, len(mm.group(1)), mm.group(2).strip("\'\"")])
+                        idx += 1
+                    prov_items = [it for it in items if it[2] in providers or it[2] == name]
+                    if prov_items and any(it[2] != name for it in prov_items):
+                        base = prov_items[0][1]
+                        lines[prov_items[0][0]] = ' ' * base + '- ' + name
+                        for it in prov_items[1:]:
+                            if it[2] != name:
+                                lines[it[0]] = None
+                        switched += 1
+                    k = idx
+                    continue
+            k += 1
+        lines = [l for l in lines if l is not None]
+        if switched == 0:
+            sys.exit('未找到可切换的 use: 引用（主配置需有引用订阅源的组，如 PROXY/Auto）')
+    out = '\n'.join(lines) + '\n'
+    open(path, 'w', encoding='utf-8').write(out)
+    print(f'[import] 订阅源 {name} 注入主配置，配置已写入（旧版已备份为 .bak.*）')
+    sys.exit(0)
 
 # 2a. 更新默认源 (mysub) 的 url
 if not name or name == 'mysub':

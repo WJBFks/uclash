@@ -808,6 +808,33 @@ table {
 }
 
 .sub-card {
+  &.active {
+    border-color: $accent;
+    box-shadow: 0 0 0 1px $accent;
+  }
+
+  .sc-badge {
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: #f0f1f3;
+    color: $muted;
+
+    &.on { background: $accent-soft; color: $accent; }
+  }
+
+  .inject-btn {
+    margin-top: 10px;
+    width: 100%;
+    background: $accent-soft;
+    border-color: $accent;
+    color: $accent;
+    font-weight: 600;
+
+    &:hover:not(:disabled) { background: $accent; color: #fff; }
+  }
+
   .sc-head {
     display: flex;
     align-items: center;

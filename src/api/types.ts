@@ -124,6 +124,10 @@ export interface SubProviderCard {
   updated: number;
   groupCount: number;
   ruleCount: number;
+  /** 是否已声明在 config.yaml 的 proxy-providers 段 */
+  declared: boolean;
+  /** 是否为主配置当前激活源（PROXY/Auto 等组的 use: 指向它） */
+  active: boolean;
   userinfo: SubUserinfo | null;
 }
 
@@ -138,6 +142,10 @@ export interface SubUserinfoData {
 }
 
 export interface SubDeleteData {
+  message: string;
+}
+
+export interface SubActivateData {
   message: string;
 }
 
