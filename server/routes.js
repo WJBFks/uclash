@@ -7,7 +7,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { config, PROXY_ON_CONTENT } from './config.js';
 import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, sleep } from './mihomo.js';
-import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules, getSelectedSource, setSelectedSource, ensureBaseBackup, restoreDefaultConfig, readBaseSectionCounts } from './lib/group-sync.js';
+import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules, getSelectedSource, setSelectedSource, ensureBaseBackup, restoreDefaultConfig, readBaseSectionCounts, readBaseGroupNames } from './lib/group-sync.js';
 
 const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
@@ -185,10 +185,17 @@ const handlers = {
     if (!r.ok || !r.json || !r.json.proxies) return { ok: false, error: '获取节点列表失败（mihomo 服务未运行？）' };
     const prox = r.json.proxies;
     const GROUP_TYPES = new Set(['Selector', 'URLTest', 'Fallback', 'LoadBalance']);
+    // 代理组页只显示「当前选中源」拥有的组：
+    //   选中订阅源 → 该源 yaml proxy-groups 定义的组；选中默认配置 → 主配置注入块外的组（PROXY/Auto）。
+    //   内置组（GLOBAL/DIRECT/REJECT…）与其他源/其他配置的组一律不显示。
+    const sel = getSelectedSource();
+    const visibleGroupNames = new Set(
+      sel === 'default' ? readBaseGroupNames() : readProviderGroups([sel]).map((g) => g.name),
+    );
     // 注意：节点名保留原样（部分节点名含前导/尾随空格，trim 后 PUT 会 400）
     const rank = (n) => (n === 'GLOBAL' ? 0 : n === 'PROXY' ? 1 : 2);
     const groups = Object.values(prox)
-      .filter((p) => p && GROUP_TYPES.has(p.type))
+      .filter((p) => p && GROUP_TYPES.has(p.type) && visibleGroupNames.has(p.name))
       .map((p) => ({
         name: p.name,
         type: p.type,
@@ -229,7 +236,7 @@ const handlers = {
       }
     } catch {}
     // 组页面只展示「当前选中」订阅源（订阅页选中的源）的未生效组与规则；选中默认配置时为空
-    const activeFilter = (sel => sel === 'default' ? [] : [sel])(getSelectedSource());
+    const activeFilter = sel === 'default' ? [] : [sel];
     // 订阅源定义、但 mihomo 未激活的组（provider 只导入节点不导入组）
     const seen = new Set(groups.map((g) => g.name));
     const orphanGroups = readProviderGroups(activeFilter).filter((g) => !seen.has(g.name));

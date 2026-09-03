@@ -495,6 +495,13 @@ export function readBaseSectionCounts() {
   return { groups, rules };
 }
 
+/** 注入块外主配置的组名列表（“默认配置”态的组名，代理组页按选中源过滤用）。 */
+export function readBaseGroupNames() {
+  let text = '';
+  try { text = fs.readFileSync(mihomoCfg, 'utf8'); } catch { return []; }
+  return baseGroupNames(stripInjectedBlocks(text.split(/\r?\n/)));
+}
+
 /** 读取订阅源缓存文件文本（优先 config 声明的 path，回退 providers/<name>.yaml）。 */
 function providerFileText(name) {
   const cp = readConfigProviders().find((p) => p.name === name);
