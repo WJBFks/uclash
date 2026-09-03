@@ -22,12 +22,25 @@ export interface ProxyEnvResult {
   message: string;
 }
 
-export interface ProxiesData {
+export interface ProxyGroupView {
+  name: string;
+  type: string;
   now: string;
   all: string[];
+  udp?: boolean;
+}
+
+export interface OrphanGroup {
+  name: string;
+  type: string;
+  members: string[];
+}
+
+export interface ProxiesData {
+  mode: string;
+  groups: ProxyGroupView[];
   meta?: Record<string, { type?: string; udp?: boolean }>;
-  mode?: string;
-  global?: { now: string; all: string[] };
+  orphanGroups?: OrphanGroup[];
 }
 
 export interface ProxySetResult {

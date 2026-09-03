@@ -11,6 +11,81 @@ import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, slee
 const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
 
+/**
+ * 解析 provider 缓存文件里的 proxy-groups（轻量行解析，与 import-sub.py 风格一致；零依赖不用 yaml 库）。
+ * 订阅源 yaml 里定义的组 mihomo 不会激活（provider 只导入节点），这里提取出来供前端展示。
+ */
+function parseYamlGroups(text) {
+  const groups = [];
+  let inPG = false, cur = null, inMembers = false, itemIndent = -1;
+  const unq = (s) => s.trim().replace(/^["']|["']$/g, '');
+  for (const line of text.split(/\r?\n/)) {
+    if (!inPG) {
+      if (/^proxy-groups:\s*$/.test(line)) inPG = true;
+      continue;
+    }
+    if (/^\S/.test(line)) break; // 顶层新键 = proxy-groups 段结束
+    const indent = line.length - line.trimStart().length;
+    const t = line.trim();
+    const isDash = t === '-' || t.startsWith('- ');
+    if (isDash && (itemIndent === -1 || indent === itemIndent)) {
+      if (itemIndent === -1) itemIndent = indent;
+      // 新组条目
+      cur = { name: '', type: '', members: [] };
+      groups.push(cur);
+      inMembers = false;
+      const rest = t.slice(1).trim();
+      let m;
+      if ((m = rest.match(/^name:\s*(.+)$/))) cur.name = unq(m[1]);
+      else if ((m = rest.match(/^type:\s*(\w+)/))) cur.type = m[1];
+      else if (/^proxies:\s*$/.test(rest)) inMembers = true;
+      continue;
+    }
+    if (!cur) continue;
+    let m;
+    if ((m = t.match(/^name:\s*(.+)$/))) { cur.name = unq(m[1]); inMembers = false; }
+    else if ((m = t.match(/^type:\s*(\w+)\s*$/))) { cur.type = m[1]; inMembers = false; }
+    else if (/^proxies:\s*$/.test(t)) inMembers = true;
+    else if (isDash && inMembers) cur.members.push(unq(t.slice(2)));
+    else if (/^[\w-]+:/.test(t)) inMembers = false; // url/interval 等其他属性行
+  }
+  return groups.filter((g) => g.name);
+}
+
+// mtime 缓存，避免 3s 轮询反复读文件
+const providerGroupsCache = new Map(); // file → { mtimeMs, groups }
+function readProviderGroups() {
+  const dir = path.join(path.dirname(mihomoCfg), 'providers');
+  const out = [];
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
+  } catch {
+    return out;
+  }
+  for (const f of files) {
+    const file = path.join(dir, f);
+    let st;
+    try {
+      st = fs.statSync(file);
+    } catch {
+      continue;
+    }
+    const hit = providerGroupsCache.get(file);
+    if (hit && hit.mtimeMs === st.mtimeMs) {
+      out.push(...hit.groups);
+      continue;
+    }
+    let groups = [];
+    try {
+      groups = parseYamlGroups(fs.readFileSync(file, 'utf8'));
+    } catch {}
+    providerGroupsCache.set(file, { mtimeMs: st.mtimeMs, groups });
+    out.push(...groups);
+  }
+  return out;
+}
+
 const handlers = {
   // 状态总览（= clash status）
   async 'GET /api/status'() {
@@ -64,21 +139,26 @@ const handlers = {
     return { ok: true, message: 'clash 终端代理已关闭（如需关闭全局 TUN，用停止服务）' };
   },
 
-  // 节点列表（= clash list）+ 协议/UDP 详情
+  // 全量代理组视图（Clash Verge 代理页同款数据源）：所有可切换组 + 节点 meta + 订阅未生效组
   async 'GET /api/proxies'() {
-    const r = await httpJson(mihomoApi + '/proxies/PROXY');
-    if (!r.ok || !r.json) return { ok: false, error: '获取节点列表失败（mihomo 服务未运行？）' };
+    const r = await httpJson(mihomoApi + '/proxies');
+    if (!r.ok || !r.json || !r.json.proxies) return { ok: false, error: '获取节点列表失败（mihomo 服务未运行？）' };
+    const prox = r.json.proxies;
+    const GROUP_TYPES = new Set(['Selector', 'URLTest', 'Fallback', 'LoadBalance']);
     // 注意：节点名保留原样（部分节点名含前导/尾随空格，trim 后 PUT 会 400）
-    const all = (r.json.all || []).map((n) => String(n));
-    // 全局模式走 GLOBAL 组：一并返回其成员与当前选择
-    let globalGroup = { now: '', all: [] };
-    try {
-      const gR = await httpJson(mihomoApi + '/proxies/GLOBAL');
-      if (gR.ok && gR.json) globalGroup = { now: (gR.json.now || '').trim(), all: (gR.json.all || []).map((n) => String(n)) };
-    } catch {}
-    // 顶层 /proxies/PROXY 只有名字，协议/UDP 详情需逐 provider 取
+    const rank = (n) => (n === 'GLOBAL' ? 0 : n === 'PROXY' ? 1 : 2);
+    const groups = Object.values(prox)
+      .filter((p) => p && GROUP_TYPES.has(p.type))
+      .map((p) => ({
+        name: p.name,
+        type: p.type,
+        now: p.now || '',
+        all: (p.all || []).map((n) => String(n)),
+        udp: !!p.udp,
+      }))
+      .sort((a, b) => rank(a.name) - rank(b.name));
+    // 物理节点 meta（协议/UDP）：逐 provider 取
     const meta = {};
-    const GROUP_TYPES = new Set(['Selector', 'URLTest', 'Fallback', 'LoadBalance', 'Direct', 'Reject', 'Pass', 'PassRule', 'RejectDrop', 'Compatible']);
     const provR = await httpJson(mihomoApi + '/providers/proxies');
     if (provR.ok && provR.json && provR.json.providers) {
       const provObj = provR.json.providers;
@@ -88,7 +168,9 @@ const handlers = {
           const det = await httpJson(mihomoApi + '/providers/proxies/' + encodeURIComponent(pn));
           if (det.ok && det.json && Array.isArray(det.json.proxies)) {
             for (const p of det.json.proxies) {
-              if (p && p.name && !GROUP_TYPES.has(p.type)) meta[p.name] = { type: p.type || '', udp: !!p.udp };
+              if (p && p.name && !GROUP_TYPES.has(p.type) && !['Direct', 'Reject', 'Pass', 'PassRule', 'RejectDrop', 'Compatible'].includes(p.type)) {
+                meta[p.name] = { type: p.type || '', udp: !!p.udp };
+              }
             }
           }
         } catch {}
@@ -96,7 +178,10 @@ const handlers = {
     }
     const modeR = await httpJson(mihomoApi + '/configs');
     const mode = modeR.ok && modeR.json ? (modeR.json.mode || 'rule') : 'rule';
-    return { ok: true, now: (r.json.now || '').trim(), all, meta, mode, global: globalGroup };
+    // 订阅源定义、但 mihomo 未激活的组（provider 只导入节点不导入组）
+    const seen = new Set(groups.map((g) => g.name));
+    const orphanGroups = readProviderGroups().filter((g) => !seen.has(g.name));
+    return { ok: true, mode, groups, meta, orphanGroups };
   },
 
   // 切换节点（= clash set）；group 默认 PROXY，全局模式下前端传 GLOBAL

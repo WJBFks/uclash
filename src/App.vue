@@ -9,7 +9,7 @@ import ToastHost from '@/components/ToastHost.vue';
 
 const PAGES = [
   { key: 'home', label: '首页', icon: '🏠' },
-  { key: 'nodes', label: '节点', icon: '🌐' },
+  { key: 'nodes', label: '代理组', icon: '🌐' },
   { key: 'subs', label: '订阅', icon: '📡' },
   { key: 'settings', label: '设置', icon: '⚙️' },
 ] as const;
