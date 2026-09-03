@@ -7,6 +7,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { config, PROXY_ON_CONTENT } from './config.js';
 import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, sleep } from './mihomo.js';
+import { syncSubscriptionGroups, configProviderNames } from './lib/group-sync.js';
 
 const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
@@ -255,9 +256,12 @@ const handlers = {
     const r = await httpJson(mihomoApi + '/providers/proxies');
     if (!r.ok || !r.json) return { ok: false, error: '获取订阅列表失败（mihomo 服务未运行或无订阅配置）' };
     const provObj = r.json.providers || {};
-    const providers = Array.isArray(provObj)
+    // mihomo v1.19 会把注入的订阅组也列进 /providers/proxies，过滤掉只留真实 provider
+    const realNames = configProviderNames();
+    const providers = (Array.isArray(provObj)
       ? provObj
-      : Object.keys(provObj).map((name) => ({ name, ...provObj[name] }));
+      : Object.keys(provObj).map((name) => ({ name, ...provObj[name] }))
+    ).filter((p) => realNames.has(p.name));
     return { ok: true, subscriptions: providers.map((p) => p.name || p.provider || '').filter(Boolean), providers };
   },
 
@@ -266,7 +270,10 @@ const handlers = {
     const r = await httpJson(mihomoApi + '/providers/proxies');
     if (!r.ok || !r.json) return { ok: false, error: '获取订阅列表失败（mihomo 服务未运行或无订阅配置）' };
     const provObj = r.json.providers || {};
-    const names = Array.isArray(provObj) ? provObj.map((p) => p.name) : Object.keys(provObj);
+    // 只刷新真实订阅源（过滤掉 mihomo 列进来的注入组）
+    const realNames = configProviderNames();
+    const allNames = Array.isArray(provObj) ? provObj.map((p) => p.name) : Object.keys(provObj);
+    const names = allNames.filter((n) => realNames.has(n));
     if (names.length === 0) return { ok: false, error: '未配置任何订阅源' };
     const before = snapshotProviders();
     const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
@@ -282,7 +289,18 @@ const handlers = {
       return { name: n, ok: changed, error: changed ? null : '无变化（订阅 URL 可能不可达，仍在用旧节点）' };
     });
     const okCount = results.filter((x) => x.ok).length;
-    return { ok: true, results, summary: `完成: ${okCount}/${names.length} 个订阅源已更新` };
+    // 订阅更新后自动激活订阅里定义的组（注入 config.yaml + 二次热加载 + 恢复选择）
+    let groups;
+    try {
+      groups = await syncSubscriptionGroups();
+    } catch (e) {
+      groups = { ok: false, error: '订阅组同步异常: ' + (e.message || e) };
+    }
+    let summary = `完成: ${okCount}/${names.length} 个订阅源已更新`;
+    if (groups.ok === false) summary += `；订阅组同步失败: ${groups.error}`;
+    else if (groups.changed) summary += `；已激活 ${groups.injected} 个订阅组`;
+    else summary += '；订阅组无变化';
+    return { ok: true, results, summary, groups };
   },
 
   // 导入订阅源（= clash import：备份 → 改配置 → 热加载；失败回滚）
@@ -317,6 +335,14 @@ const handlers = {
         await sleep(6000); // 等 mihomo 重新拉取订阅
         const after = snapshotProviders();
         subUpdated = Object.keys(after).some((f) => after[f] > (before[f] || 0));
+        // 导入/刷新后自动激活订阅里定义的组
+        try {
+          const gs = await syncSubscriptionGroups();
+          if (gs.ok === false) message += `，但订阅组同步失败：${gs.error}`;
+          else if (gs.changed) message += `，已激活 ${gs.injected} 个订阅组`;
+        } catch (e) {
+          message += `，但订阅组同步异常：${e.message || e}`;
+        }
       }
     }
     let message = info;

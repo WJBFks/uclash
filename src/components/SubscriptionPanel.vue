@@ -10,6 +10,7 @@ const subNames = ref<string[]>([]);
 const refreshing = ref(false);
 const refreshResults = ref<SubRefreshData['results'] | null>(null);
 const refreshSummary = ref('');
+const groupsInfo = ref<SubRefreshData['groups'] | null>(null);
 
 const impUrl = ref('');
 const impName = ref('');
@@ -36,6 +37,7 @@ async function refreshSubs() {
     const d = await api<SubRefreshData>('/subscriptions/refresh', { method: 'POST', timeout: 120000 });
     refreshResults.value = d.results;
     refreshSummary.value = d.summary;
+    groupsInfo.value = d.groups ?? null;
     toast(d.summary);
     loadSubs();
   } catch (e) {
@@ -83,10 +85,13 @@ onMounted(loadSubs);
       <span class="muted">{{ subNames.length ? '订阅源: ' + subNames.join('、') : '未配置订阅源' }}</span>
     </div>
     <div class="sub-result">
-      <span v-if="refreshing" class="muted">刷新中（热加载 + 验证缓存文件变化，最多约 15 秒）…</span>
+      <span v-if="refreshing" class="muted">刷新中（热加载 + 验证缓存变化 + 同步订阅组，最多约 30 秒）…</span>
       <template v-else-if="refreshResults">
         <div v-for="r in refreshResults" :key="r.name" :class="r.ok ? 'ok' : 'fail'">
           {{ r.ok ? '✓' : '✗' }} {{ r.name }}{{ r.error ? ` — ${r.error}` : '' }}
+        </div>
+        <div v-if="groupsInfo" :class="groupsInfo.ok === false ? 'fail' : 'ok'">
+          {{ groupsInfo.ok === false ? '✗' : '✓' }} {{ groupsInfo.error || (groupsInfo.changed ? `已激活 ${groupsInfo.injected} 个订阅组` : '订阅组无变化') }}
         </div>
         <div class="muted">{{ refreshSummary }}</div>
       </template>

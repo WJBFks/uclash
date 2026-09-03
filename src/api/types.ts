@@ -116,9 +116,22 @@ export interface SubRefreshItem {
   note?: string;
 }
 
+export interface GroupSyncData {
+  ok: boolean;
+  injected?: number;
+  changed?: boolean;
+  reloaded?: boolean;
+  restored?: number;
+  backup?: string;
+  names?: string[];
+  note?: string;
+  error?: string;
+}
+
 export interface SubRefreshData {
   results: SubRefreshItem[];
   summary: string;
+  groups?: GroupSyncData;
 }
 
 export interface ImportData {
