@@ -379,6 +379,76 @@ code {
   }
 }
 
+/* 「显示组」筛选行：单选/多选开关 + 组勾选 chip */
+.np-groupfilter {
+  margin-bottom: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed $border;
+
+  .ngf-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: $muted;
+    white-space: nowrap;
+  }
+}
+
+.seg {
+  display: flex;
+  gap: 4px;
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 3px;
+
+  button {
+    padding: 4px 12px;
+    font-size: 12px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: $muted;
+    cursor: pointer;
+
+    &:hover { color: $accent; }
+
+    &.active {
+      background: $accent;
+      color: #fff;
+      font-weight: 600;
+
+      &:hover { color: #fff; }
+    }
+  }
+}
+
+.ngf-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+
+  .chip {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid $border;
+    background: #fff;
+    color: $muted;
+    cursor: pointer;
+    transition: border-color 0.12s, color 0.12s, background 0.12s;
+
+    &:hover { border-color: $accent; color: $accent; }
+
+    &.on {
+      background: $accent-soft;
+      border-color: $accent;
+      color: $accent;
+      font-weight: 600;
+    }
+  }
+}
+
 .group-head {
   display: flex;
   justify-content: space-between;

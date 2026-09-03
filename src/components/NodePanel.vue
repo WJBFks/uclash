@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import { useToast } from '@/composables/useToast';
-import { getTestUrl, setTestUrl, PrefsEvent } from '@/utils/prefs';
+import { getTestUrl, setTestUrl, PrefsEvent, getGroupFilter, setGroupFilter } from '@/utils/prefs';
 import type { ProxiesData, ProxyGroupView, ProxyTestData, ProxyTestResult, ProxySetResult, ModeResult } from '@/api/types';
 import HelpTip from '@/components/HelpTip.vue';
 
@@ -172,7 +172,66 @@ const visibleMembers = (g: ProxyGroupView): string[] => {
   const q = filter.value.trim().toLowerCase();
   return g.all.filter((n) => !q || n.toLowerCase().includes(q));
 };
-const visibleGroups = computed(() => groups.value.filter((g) => visibleMembers(g).length > 0));
+
+// ---- 「显示组」筛选：单选（只看一个）/ 多选（看所有勾选的组）----
+const filterMode = ref<'single' | 'multi'>('multi');
+const selectedGroups = ref<Set<string>>(new Set());
+const seenGroups = new Set<string>();
+let filterReady = false;
+
+function persistGroupFilter() {
+  setGroupFilter({ mode: filterMode.value, selected: [...selectedGroups.value] });
+}
+function toggleGroup(name: string) {
+  if (filterMode.value === 'single') {
+    selectedGroups.value = new Set([name]);
+  } else {
+    const s = new Set(selectedGroups.value);
+    if (s.has(name)) s.delete(name);
+    else s.add(name);
+    selectedGroups.value = s;
+  }
+  persistGroupFilter();
+}
+function setFilterMode(m: 'single' | 'multi') {
+  if (filterMode.value === m) return;
+  filterMode.value = m;
+  if (m === 'single' && selectedGroups.value.size > 1) {
+    selectedGroups.value = new Set([...selectedGroups.value][0]);
+  }
+  persistGroupFilter();
+}
+// 首次拿到组列表时恢复偏好；之后新出现的组默认勾选，消失的组从勾选里清掉
+function reconcileGroupFilter() {
+  if (!groups.value.length) return;
+  if (!filterReady) {
+    const saved = getGroupFilter();
+    if (saved) {
+      filterMode.value = saved.mode;
+      selectedGroups.value = new Set(saved.selected);
+    }
+    filterReady = true;
+  }
+  let changed = false;
+  for (const g of groups.value) {
+    if (!seenGroups.has(g.name) && !selectedGroups.value.has(g.name)) {
+      selectedGroups.value.add(g.name);
+      changed = true;
+    }
+    seenGroups.add(g.name);
+  }
+  for (const n of [...selectedGroups.value]) {
+    if (!groupNames.value.has(n)) {
+      selectedGroups.value.delete(n);
+      changed = true;
+    }
+  }
+  if (changed) persistGroupFilter();
+}
+
+const visibleGroups = computed(() =>
+  groups.value.filter((g) => selectedGroups.value.has(g.name) && visibleMembers(g).length > 0),
+);
 const totalMembers = computed(() => groups.value.reduce((s, g) => s + g.all.length, 0));
 
 async function loadNodes(force = false) {
@@ -181,6 +240,7 @@ async function loadNodes(force = false) {
   try {
     data.value = await api<ProxiesData>('/proxies');
     loadError.value = '';
+    reconcileGroupFilter();
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -299,6 +359,23 @@ onUnmounted(() => {
           测试全部 ({{ allTestable.length }})
         </button>
       </div>
+
+      <div class="row np-groupfilter">
+        <span class="ngf-label">显示组</span>
+        <div class="seg" role="group" aria-label="显示组模式">
+          <button :class="{ active: filterMode === 'single' }" @click="setFilterMode('single')">单选</button>
+          <button :class="{ active: filterMode === 'multi' }" @click="setFilterMode('multi')">多选</button>
+        </div>
+        <div class="ngf-chips">
+          <button
+            v-for="g in groups"
+            :key="g.name"
+            :class="['chip', { on: selectedGroups.has(g.name) }]"
+            :title="`勾选/取消显示组 ${g.name}`"
+            @click="toggleGroup(g.name)"
+          >{{ g.name }}</button>
+        </div>
+      </div>
     </div>
 
     <!-- 各代理组卡片 -->
@@ -383,7 +460,7 @@ onUnmounted(() => {
       </div>
 
       <div v-if="!visibleGroups.length && groups.length" class="card">
-        <div class="node-empty">无匹配节点</div>
+        <div class="node-empty">{{ selectedGroups.size ? '无匹配节点' : '未勾选任何组 —— 请在上方「显示组」勾选要显示的代理组' }}</div>
       </div>
       <div v-if="!groups.length && !data" class="card">
         <div class="node-empty">加载节点中…</div>
