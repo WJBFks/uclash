@@ -580,6 +580,23 @@ code {
     &.slow { color: $red; background: $red-soft; }
     &.fail { color: $red; background: $red-soft; font-weight: 400; }
   }
+
+  /* 成员本身是代理组：紫色标记，与普通节点徽章区分 */
+  .badge.grp {
+    background: #f3e8ff;
+    color: #7c3aed;
+  }
+
+  /* 子组当前选中的节点 */
+  .nc-now {
+    font-size: 11.5px;
+    color: $text;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
 }
 
 // 订阅表格

@@ -164,10 +164,11 @@ function onPrefsChanged() {
 watch(testUrl, (v) => setTestUrl(v));
 
 // ---- 组/成员展示 ----
-const TYPE_LABEL: Record<string, string> = { Selector: 'selector', URLTest: 'url-test', Fallback: 'fallback', LoadBalance: 'load-balance' };
+const TYPE_LABEL: Record<string, string> = { Selector: 'Selector', URLTest: 'URLTest', Fallback: 'Fallback', LoadBalance: 'LoadBalance' };
 const SPECIAL_BADGE: Record<string, string> = { DIRECT: '直连', REJECT: '拒绝' };
 
 const groupNames = computed(() => new Set(groups.value.map((g) => g.name)));
+const groupNowMap = computed(() => new Map(groups.value.map((g) => [g.name, g.now])));
 const visibleMembers = (g: ProxyGroupView): string[] => {
   const q = filter.value.trim().toLowerCase();
   return g.all.filter((n) => !q || n.toLowerCase().includes(q));
@@ -264,10 +265,20 @@ async function loadNodes(force = false) {
 function isNode(name: string): boolean {
   return Boolean(data.value?.meta?.[name]);
 }
+function isGroupMember(name: string): boolean {
+  return groupNames.value.has(name);
+}
 function badgeOf(name: string): string {
   if (SPECIAL_BADGE[name]) return SPECIAL_BADGE[name];
-  if (groupNames.value.has(name)) return '组';
+  if (isGroupMember(name)) {
+    // 成员本身是组：显示组类型（Selector/URLTest/…）
+    const g = groups.value.find((x) => x.name === name);
+    return TYPE_LABEL[g?.type || ''] || 'Selector';
+  }
   return data.value?.meta?.[name]?.type || '';
+}
+function groupNow(name: string): string {
+  return groupNowMap.value.get(name) || '';
 }
 function badgeClass(r: ProxyTestResult): string {
   if (!r.ok) return 'fail';
@@ -427,7 +438,8 @@ onUnmounted(() => {
               <span v-if="n === g.now" class="nc-check">✓</span>
             </div>
             <div class="nc-badges">
-              <span v-if="badgeOf(n)" class="badge">{{ badgeOf(n) }}</span>
+              <span v-if="isGroupMember(n) && groupNow(n)" class="nc-now" :title="`当前选择：${groupNow(n)}`">{{ groupNow(n) }}</span>
+              <span v-if="badgeOf(n)" :class="['badge', { grp: isGroupMember(n) }]">{{ badgeOf(n) }}</span>
               <span v-if="data?.meta?.[n]?.udp" class="badge">UDP</span>
               <span
                 v-if="testResults[n]"
