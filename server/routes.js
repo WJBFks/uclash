@@ -179,10 +179,20 @@ const handlers = {
     }
     const modeR = await httpJson(mihomoApi + '/configs');
     const mode = modeR.ok && modeR.json ? (modeR.json.mode || 'rule') : 'rule';
+    // 规则表（前端用它生成每个组的「流量路径」说明）
+    let rules = [];
+    try {
+      const ruleR = await httpJson(mihomoApi + '/rules');
+      if (ruleR.ok && ruleR.json && Array.isArray(ruleR.json.rules)) {
+        rules = ruleR.json.rules
+          .filter((x) => x && x.proxy)
+          .map((x) => ({ type: x.type || '', payload: x.payload || '', proxy: x.proxy }));
+      }
+    } catch {}
     // 订阅源定义、但 mihomo 未激活的组（provider 只导入节点不导入组）
     const seen = new Set(groups.map((g) => g.name));
     const orphanGroups = readProviderGroups().filter((g) => !seen.has(g.name));
-    return { ok: true, mode, groups, meta, orphanGroups };
+    return { ok: true, mode, groups, meta, orphanGroups, rules };
   },
 
   // 切换节点（= clash set）；group 默认 PROXY，全局模式下前端传 GLOBAL

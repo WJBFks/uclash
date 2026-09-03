@@ -36,11 +36,18 @@ export interface OrphanGroup {
   members: string[];
 }
 
+export interface RuleInfo {
+  type: string;
+  payload: string;
+  proxy: string;
+}
+
 export interface ProxiesData {
   mode: string;
   groups: ProxyGroupView[];
   meta?: Record<string, { type?: string; udp?: boolean }>;
   orphanGroups?: OrphanGroup[];
+  rules?: RuleInfo[];
 }
 
 export interface ProxySetResult {

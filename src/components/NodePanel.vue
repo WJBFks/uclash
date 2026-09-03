@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import { useToast } from '@/composables/useToast';
 import { getTestUrl, setTestUrl, PrefsEvent } from '@/utils/prefs';
-import type { ProxiesData, ProxyGroupView, ProxyTestData, ProxyTestResult, ProxySetResult, ModeResult } from '@/api/types';
+import type { ProxiesData, ProxyGroupView, ProxyTestData, ProxyTestResult, ProxySetResult, ModeResult, RuleInfo } from '@/api/types';
+import HelpTip from '@/components/HelpTip.vue';
 
 const toast = useToast();
 
@@ -19,6 +20,96 @@ let timer: ReturnType<typeof setInterval> | null = null;
 
 const groups = computed<ProxyGroupView[]>(() => data.value?.groups ?? []);
 const mode = computed(() => data.value?.mode || 'rule');
+
+// ---- 「?」hover 说明：解释当前配置下每个组的作用与整体流量走向 ----
+const TYPE_DESC: Record<string, string> = {
+  Selector: '手动选择组：点谁谁生效',
+  URLTest: '自动测速组：定时 ping 成员，自动选最快节点（手动点击会锁定）',
+  Fallback: '故障回退组：当前节点不通时自动切下一个',
+  LoadBalance: '负载均衡组：流量在成员间轮流分发',
+};
+
+function ruleLabel(r: RuleInfo): string {
+  if (r.type === 'Match') return '兜底（所有未匹配流量）';
+  if (r.type === 'GeoIP') return /cn/i.test(r.payload) ? '中国大陆 IP' : `GeoIP ${r.payload}`;
+  if (r.type === 'GeoSite') return `站点 ${r.payload}`;
+  if (r.type === 'IPCIDR') return `内网/私网 ${r.payload}`;
+  if (r.type.startsWith('DOMAIN')) return `域名 ${r.payload}`;
+  return `${r.type} ${r.payload}`.trim();
+}
+
+const rulesOf = (name: string) => (data.value?.rules ?? []).filter((r) => r.proxy === name);
+
+const globalNow = computed(() => groups.value.find((x) => x.name === 'GLOBAL')?.now || '');
+const proxyNow = computed(() => groups.value.find((x) => x.name === 'PROXY')?.now || '');
+
+function groupDesc(g: ProxyGroupView): string {
+  const lines: string[] = [TYPE_DESC[g.type] || `类型：${g.type}`];
+  lines.push(`当前选择：${g.now || '（未选择）'}`);
+  lines.push(`成员：${g.all.length} 个`);
+  if (g.name === 'GLOBAL') {
+    lines.push('流量路径：仅「全局模式」下生效——所有流量（含国内）走本组当前选择；规则/直连模式不参与分流');
+    lines.push('选 PROXY = 跟随主代理组；选 DIRECT = 全部直连');
+    return lines.join('\n');
+  }
+  if (mode.value === 'direct') {
+    lines.push('流量路径：当前直连模式，所有流量直连，本组不参与分流');
+    return lines.join('\n');
+  }
+  if (mode.value === 'global') {
+    lines.push(
+      globalNow.value === g.name
+        ? '流量路径：全局模式下 GLOBAL 指向本组，所有流量走本组当前选择'
+        : `流量路径：GLOBAL 当前指向 ${globalNow.value || '（无）'}，本组未承载流量；把 GLOBAL 切到本组才生效`,
+    );
+    return lines.join('\n');
+  }
+  // 规则模式
+  const rs = rulesOf(g.name);
+  if (rs.length) {
+    lines.push(`流量路径：有 ${rs.length} 条规则指向本组 → ${rs.map(ruleLabel).join('；')}`);
+  } else {
+    lines.push('流量路径：当前无规则指向本组，不参与日常分流');
+    lines.push('想让流量走它：切「全局模式」选本组，或添加规则（如 Telegram 域名 → ✈️Telegram）');
+  }
+  return lines.join('\n');
+}
+
+function overviewDesc(): string {
+  const names: Record<string, string> = { rule: '规则', global: '全局', direct: '直连' };
+  const lines: string[] = [`当前模式：${names[mode.value] || mode.value}。流量怎么走：`];
+  if (mode.value === 'direct') {
+    lines.push('• 所有流量直连，代理组不生效（各组选择保留，切回后恢复）');
+    return lines.join('\n');
+  }
+  if (mode.value === 'global') {
+    lines.push(`• 所有流量（含国内）→ GLOBAL 组当前选择：${globalNow.value || '（无）'}`);
+    if (globalNow.value === 'DIRECT') lines.push('• 即当前全部直连');
+    else if (globalNow.value === 'PROXY') lines.push(`• 即全部流量走 PROXY 组当前节点：${proxyNow.value || '-'}`);
+    return lines.join('\n');
+  }
+  // 规则模式：按目标组聚合规则
+  const byTarget = new Map<string, string[]>();
+  for (const r of data.value?.rules ?? []) {
+    const arr = byTarget.get(r.proxy) || [];
+    arr.push(ruleLabel(r));
+    byTarget.set(r.proxy, arr);
+  }
+  for (const [target, labels] of byTarget) {
+    const extra = target === 'DIRECT' ? '（直连）' : target === 'PROXY' ? `（当前节点：${proxyNow.value || '-'}）` : `（组 ${target}）`;
+    lines.push(`• ${labels.join('；')} → ${target}${extra}`);
+  }
+  const referenced = new Set(byTarget.keys());
+  const idle = groups.value.filter((g) => g.name !== 'GLOBAL' && !referenced.has(g.name)).map((g) => g.name);
+  if (idle.length) lines.push(`未接入分流的组（仅手动切换/全局模式用）：${idle.join('、')}`);
+  return lines.join('\n');
+}
+
+const modeDesc =
+  '规则：按规则表分流（当前：内网/国内直连，其他走 PROXY 组）\n' +
+  '全局：所有流量（含国内）走 GLOBAL 组当前选择\n' +
+  '直连：所有流量直连，代理组不生效\n' +
+  '每个组标题旁的「?」悬停可看该组具体作用与流量路径';
 
 // ---- 代理模式切换（规则/全局/直连）----
 async function setMode(m: string) {
@@ -146,13 +237,17 @@ onUnmounted(() => {
       <div class="np-header">
         <div class="np-title">
           <h2>代理组</h2>
+          <HelpTip :text="overviewDesc()" />
           <span class="count">{{ groups.length }}</span>
           <span v-if="totalMembers" class="np-total">{{ totalMembers }} 个成员</span>
         </div>
-        <div class="mode-switch" role="group" aria-label="代理模式">
-          <button :class="{ active: mode === 'rule' }" @click="setMode('rule')">规则</button>
-          <button :class="{ active: mode === 'global' }" @click="setMode('global')">全局</button>
-          <button :class="{ active: mode === 'direct' }" @click="setMode('direct')">直连</button>
+        <div class="mode-switch-wrap">
+          <div class="mode-switch" role="group" aria-label="代理模式">
+            <button :class="{ active: mode === 'rule' }" @click="setMode('rule')">规则</button>
+            <button :class="{ active: mode === 'global' }" @click="setMode('global')">全局</button>
+            <button :class="{ active: mode === 'direct' }" @click="setMode('direct')">直连</button>
+          </div>
+          <HelpTip :text="modeDesc" />
         </div>
       </div>
 
@@ -180,6 +275,7 @@ onUnmounted(() => {
           <div class="gh-left">
             <span class="gh-icon">{{ GROUP_ICON[g.type] || '📦' }}</span>
             <h3 class="gh-name">{{ g.name }}</h3>
+            <HelpTip :text="groupDesc(g)" />
             <span class="gh-type">{{ TYPE_LABEL[g.type] || g.type }}</span>
           </div>
           <div class="gh-right">
@@ -251,7 +347,7 @@ onUnmounted(() => {
 
     <div v-if="testStatus" class="hint testing"><span class="dot warn"></span>{{ testStatus }}</div>
     <div class="hint">
-      点击成员卡片 = 切换该组的选择（<code>clash set</code>）；列表每 3 秒自动刷新；测速走 mihomo 原生 healthcheck、并发、单项 10s 超时，不影响当前出口
+      点击成员卡片 = 切换该组的选择（<code>clash set</code>）；列表每 3 秒自动刷新；标题旁的「?」悬停查看该组作用与流量路径；测速走 mihomo 原生 healthcheck、并发、单项 10s 超时，不影响当前出口
     </div>
   </div>
 </template>
