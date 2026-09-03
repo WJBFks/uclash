@@ -173,8 +173,8 @@ const visibleMembers = (g: ProxyGroupView): string[] => {
   return g.all.filter((n) => !q || n.toLowerCase().includes(q));
 };
 
-// ---- 「显示组」筛选：单选（只看一个）/ 多选（看所有勾选的组）----
-const filterMode = ref<'single' | 'multi'>('multi');
+// ---- 「显示组」筛选：单选（只看一个）/ 多选（看所有勾选的组）；模式与勾选均持久化到 localStorage ----
+const filterMode = ref<'single' | 'multi'>('single'); // 默认单选
 const selectedGroups = ref<Set<string>>(new Set());
 const seenGroups = new Set<string>();
 let filterReady = false;
@@ -196,25 +196,34 @@ function toggleGroup(name: string) {
 function setFilterMode(m: 'single' | 'multi') {
   if (filterMode.value === m) return;
   filterMode.value = m;
-  if (m === 'single' && selectedGroups.value.size > 1) {
-    selectedGroups.value = new Set([...selectedGroups.value][0]);
+  if (m === 'single') {
+    if (selectedGroups.value.size > 1) {
+      selectedGroups.value = new Set([...selectedGroups.value][0]);
+    } else if (selectedGroups.value.size === 0 && groups.value.length) {
+      selectedGroups.value = new Set([groups.value[0].name]); // 空选时兑底第一个组
+    }
   }
   persistGroupFilter();
 }
-// 首次拿到组列表时恢复偏好；之后新出现的组默认勾选，消失的组从勾选里清掉
+// 首次拿到组列表时恢复 localStorage 偏好（无则默认：单选 + PROXY）；之后新组仅多选模式默认勾选，消失的组清掉；单选项消失时兑底
 function reconcileGroupFilter() {
   if (!groups.value.length) return;
+  let changed = false;
   if (!filterReady) {
     const saved = getGroupFilter();
     if (saved) {
       filterMode.value = saved.mode;
       selectedGroups.value = new Set(saved.selected);
+    } else {
+      filterMode.value = 'single';
+      const def = groups.value.find((g) => g.name === 'PROXY') ?? groups.value[0];
+      selectedGroups.value = new Set([def.name]);
+      changed = true; // 默认值也写入 localStorage，后续访问走恢复路径
     }
     filterReady = true;
   }
-  let changed = false;
   for (const g of groups.value) {
-    if (!seenGroups.has(g.name) && !selectedGroups.value.has(g.name)) {
+    if (!seenGroups.has(g.name) && !selectedGroups.value.has(g.name) && filterMode.value === 'multi') {
       selectedGroups.value.add(g.name);
       changed = true;
     }
@@ -225,6 +234,10 @@ function reconcileGroupFilter() {
       selectedGroups.value.delete(n);
       changed = true;
     }
+  }
+  if (filterMode.value === 'single' && selectedGroups.value.size !== 1) {
+    selectedGroups.value = new Set([groups.value[0].name]);
+    changed = true;
   }
   if (changed) persistGroupFilter();
 }
