@@ -243,8 +243,12 @@ function reconcileGroupFilter() {
   if (changed) persistGroupFilter();
 }
 
+const isGlobalMode = computed(() => data.value?.mode === 'global');
 const visibleGroups = computed(() =>
-  groups.value.filter((g) => selectedGroups.value.has(g.name) && visibleMembers(g).length > 0),
+  // 全局模式不按「显示组」筛选，展示全部组
+  groups.value.filter((g) =>
+    (isGlobalMode.value || selectedGroups.value.has(g.name)) && visibleMembers(g).length > 0,
+  ),
 );
 const totalMembers = computed(() => groups.value.reduce((s, g) => s + g.all.length, 0));
 
@@ -280,11 +284,12 @@ function badgeOf(name: string): string {
 function groupNow(name: string): string {
   return groupNowMap.value.get(name) || '';
 }
-function badgeClass(r: ProxyTestResult): string {
-  if (!r.ok) return 'fail';
+// 延迟颜色（Verge 同款）：绿(<300) → 蓝(300–600) → 橙黄(≥600) → 红(失败)
+function latClass(r: ProxyTestResult): string {
+  if (!r.ok) return 'err';
   const l = r.latency ?? 0;
-  if (l < 300) return 'good';
-  if (l < 1000) return 'mid';
+  if (l < 300) return 'fast';
+  if (l < 600) return 'mid';
   return 'slow';
 }
 
@@ -384,7 +389,7 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div class="row np-groupfilter">
+      <div v-if="!isGlobalMode" class="row np-groupfilter">
         <span class="ngf-label">显示组</span>
         <div class="seg" role="group" aria-label="显示组模式">
           <button :class="{ active: filterMode === 'single' }" @click="setFilterMode('single')">单选</button>
@@ -435,19 +440,19 @@ onUnmounted(() => {
           >
             <div class="nc-top">
               <span class="nc-name">{{ n }}</span>
-              <span v-if="n === g.now" class="nc-check">✓</span>
+              <span class="nc-right">
+                <span
+                  v-if="testResults[n]"
+                  :class="['nc-lat', latClass(testResults[n])]"
+                  :title="testResults[n].ok ? '' : (testResults[n].error || '')"
+                >{{ testResults[n].ok ? testResults[n].latency : 'Error' }}</span>
+                <span v-if="n === g.now" class="nc-check">✓</span>
+              </span>
             </div>
             <div class="nc-badges">
               <span v-if="isGroupMember(n) && groupNow(n)" class="nc-now" :title="`当前选择：${groupNow(n)}`">{{ groupNow(n) }}</span>
               <span v-if="badgeOf(n)" :class="['badge', { grp: isGroupMember(n) }]">{{ badgeOf(n) }}</span>
               <span v-if="data?.meta?.[n]?.udp" class="badge">UDP</span>
-              <span
-                v-if="testResults[n]"
-                :class="['badge', 'lat', badgeClass(testResults[n])]"
-                :title="testResults[n].error || ''"
-              >
-                {{ testResults[n].ok ? `${testResults[n].latency}ms` : `✗ ${(testResults[n].error || '').slice(0, 12)}` }}
-              </span>
             </div>
           </div>
         </div>
@@ -485,7 +490,7 @@ onUnmounted(() => {
       </div>
 
       <div v-if="!visibleGroups.length && groups.length" class="card">
-        <div class="node-empty">{{ selectedGroups.size ? '无匹配节点' : '未勾选任何组 —— 请在上方「显示组」勾选要显示的代理组' }}</div>
+        <div class="node-empty">{{ !isGlobalMode && !selectedGroups.size ? '未勾选任何组 —— 请在上方「显示组」勾选要显示的代理组' : '无匹配节点' }}</div>
       </div>
       <div v-if="!groups.length && !data" class="card">
         <div class="node-empty">加载节点中…</div>

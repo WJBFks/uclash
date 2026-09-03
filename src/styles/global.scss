@@ -574,11 +574,23 @@ code {
     font-weight: 600;
   }
 
-  .badge.lat {
-    &.good { color: $green; background: $green-soft; }
-    &.mid { color: $amber; background: $amber-soft; }
-    &.slow { color: $red; background: $red-soft; }
-    &.fail { color: $red; background: $red-soft; font-weight: 400; }
+  /* 延迟（Verge 同款）：卡片右上角纯文本，绿 → 蓝 → 橙黄 → 红(Error) */
+  .nc-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .nc-lat {
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+
+    &.fast { color: $green; }
+    &.mid { color: $accent; }
+    &.slow { color: $amber; }
+    &.err { color: $red; }
   }
 
   /* 成员本身是代理组：紫色标记，与普通节点徽章区分 */
