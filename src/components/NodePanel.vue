@@ -75,8 +75,8 @@ function ruleNoneText(g: ProxyGroupView): string {
   return '无规则指向此组 —— 流量不会自动进来；仅在全局模式手动选本组、或添加规则后才承载流量';
 }
 
-const globalNow = computed(() => groups.value.find((x) => x.name === 'GLOBAL')?.now || '');
-const proxyNow = computed(() => groups.value.find((x) => x.name === 'PROXY')?.now || '');
+const globalNow = computed(() => data.value?.globalNow ?? groups.value.find((x) => x.name === 'GLOBAL')?.now ?? '');
+const proxyNow = computed(() => data.value?.proxyNow ?? groups.value.find((x) => x.name === 'PROXY')?.now ?? '');
 
 function groupDesc(g: ProxyGroupView): string {
   const lines: string[] = [TYPE_DESC[g.type] || `类型：${g.type}`];

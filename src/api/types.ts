@@ -55,6 +55,8 @@ export interface ProxiesData {
   orphanGroups?: OrphanGroup[];
   rules?: RuleInfo[];
   subRules?: SubRuleInfo[];
+  proxyNow?: string;
+  globalNow?: string;
 }
 
 export interface ProxySetResult {

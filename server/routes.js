@@ -184,16 +184,22 @@ const handlers = {
     const r = await httpJson(mihomoApi + '/proxies');
     if (!r.ok || !r.json || !r.json.proxies) return { ok: false, error: '获取节点列表失败（mihomo 服务未运行？）' };
     const prox = r.json.proxies;
+    // PROXY/GLOBAL 卡片虽已被按源过滤，但两者仍是真实生效的组
+    // （PROXY 是 MATCH 兜底目标，GLOBAL 是全局模式入口），当前选择单独导出供概览文案用
+    const proxyNow = (prox['PROXY'] && prox['PROXY'].now) || '';
+    const globalNow = (prox['GLOBAL'] && prox['GLOBAL'].now) || '';
     const GROUP_TYPES = new Set(['Selector', 'URLTest', 'Fallback', 'LoadBalance']);
     // 代理组页只显示「当前选中源」拥有的组：
     //   选中订阅源 → 该源 yaml proxy-groups 定义的组；选中默认配置 → 主配置注入块外的组（PROXY/Auto）。
     //   内置组（GLOBAL/DIRECT/REJECT…）与其他源/其他配置的组一律不显示。
     const sel = getSelectedSource();
-    const visibleGroupNames = new Set(
-      sel === 'default' ? readBaseGroupNames() : readProviderGroups([sel]).map((g) => g.name),
-    );
+    // 按「当前选中源」配置文件里 proxy-groups 的定义顺序展示（不再 GLOBAL/PROXY 优先）
+    const orderedVisibleNames = sel === 'default'
+      ? readBaseGroupNames()
+      : readProviderGroups([sel]).map((g) => g.name);
+    const visibleGroupNames = new Set(orderedVisibleNames);
+    const orderIndex = new Map(orderedVisibleNames.map((n, i) => [n, i]));
     // 注意：节点名保留原样（部分节点名含前导/尾随空格，trim 后 PUT 会 400）
-    const rank = (n) => (n === 'GLOBAL' ? 0 : n === 'PROXY' ? 1 : 2);
     const groups = Object.values(prox)
       .filter((p) => p && GROUP_TYPES.has(p.type) && visibleGroupNames.has(p.name))
       .map((p) => ({
@@ -203,7 +209,7 @@ const handlers = {
         all: (p.all || []).map((n) => String(n)),
         udp: !!p.udp,
       }))
-      .sort((a, b) => rank(a.name) - rank(b.name));
+      .sort((a, b) => (orderIndex.get(a.name) ?? 1e9) - (orderIndex.get(b.name) ?? 1e9));
     // 物理节点 meta（协议/UDP）：逐 provider 取
     const meta = {};
     const provR = await httpJson(mihomoApi + '/providers/proxies');
@@ -245,7 +251,7 @@ const handlers = {
     try {
       subRules = readProviderRules(activeFilter);
     } catch {}
-    return { ok: true, mode, groups, meta, orphanGroups, rules, subRules };
+    return { ok: true, mode, groups, meta, orphanGroups, rules, subRules, proxyNow, globalNow };
   },
 
   // 切换节点（= clash set）；group 默认 PROXY，全局模式下前端传 GLOBAL
