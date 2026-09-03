@@ -676,3 +676,85 @@ table {
   align-items: center;
   gap: 6px;
 }
+
+// 组内路由规则展示
+.group-rules {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed $border;
+
+  .gr-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .gr-title {
+    font-size: 11.5px;
+    color: $muted;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .gr-badge {
+    font-size: 10.5px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+    background: #f0f1f3;
+    color: $muted;
+
+    &.ok { color: $green; background: $green-soft; }
+    &.warn { color: $amber; background: $amber-soft; }
+  }
+
+  .gr-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 1.5px 0;
+    font-size: 12px;
+    color: $text;
+
+    .gr-type {
+      flex-shrink: 0;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 10.5px;
+      color: $muted;
+      background: #f0f1f3;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .gr-addr {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .gr-more {
+    font-size: 11.5px;
+    color: $accent;
+    cursor: pointer;
+    padding-top: 2px;
+
+    &:hover { text-decoration: underline; }
+  }
+
+  .gr-none {
+    font-size: 12px;
+    color: $muted;
+    line-height: 1.6;
+    padding: 2px 0;
+  }
+
+  .gr-note {
+    font-size: 11px;
+    color: $amber;
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+}

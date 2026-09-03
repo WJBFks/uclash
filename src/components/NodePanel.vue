@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import { useToast } from '@/composables/useToast';
 import { getTestUrl, setTestUrl, PrefsEvent } from '@/utils/prefs';
-import type { ProxiesData, ProxyGroupView, ProxyTestData, ProxyTestResult, ProxySetResult, ModeResult, RuleInfo } from '@/api/types';
+import type { ProxiesData, ProxyGroupView, ProxyTestData, ProxyTestResult, ProxySetResult, ModeResult, RuleInfo, SubRuleInfo } from '@/api/types';
 import HelpTip from '@/components/HelpTip.vue';
 
 const toast = useToast();
@@ -29,16 +29,51 @@ const TYPE_DESC: Record<string, string> = {
   LoadBalance: '负载均衡组：流量在成员间轮流分发',
 };
 
-function ruleLabel(r: RuleInfo): string {
-  if (r.type === 'Match') return '兜底（所有未匹配流量）';
-  if (r.type === 'GeoIP') return /cn/i.test(r.payload) ? '中国大陆 IP' : `GeoIP ${r.payload}`;
-  if (r.type === 'GeoSite') return `站点 ${r.payload}`;
-  if (r.type === 'IPCIDR') return `内网/私网 ${r.payload}`;
-  if (r.type.startsWith('DOMAIN')) return `域名 ${r.payload}`;
-  return `${r.type} ${r.payload}`.trim();
+function ruleLabel(r: { type: string; payload: string }): string {
+  // 兼容两种写法：mihomo API（Match/GeoIP/IPCIDR）与 yaml 原文（MATCH/GEOIP/IP-CIDR）
+  const t = (r.type || '').toLowerCase().replace(/-/g, '');
+  const p = r.payload;
+  if (t === 'match') return '其余所有流量（兜底）';
+  if (t === 'fallback') return '未匹配流量（兜底）';
+  if (t === 'domain') return `域名 ${p}`;
+  if (t === 'domainsuffix') return `域名 ${p}（含子域）`;
+  if (t === 'domainkeyword') return `域名包含 ${p}`;
+  if (t === 'domainregex') return `域名匹配 ${p}`;
+  if (t === 'geosite') return `站点 ${p}`;
+  if (t === 'geoip') return p.toUpperCase() === 'CN' ? '中国大陆 IP' : `IP 归属 ${p}`;
+  if (t === 'ipcidr' || t === 'ipcidr6') return `网段 ${p}`;
+  if (t === 'srcipcidr' || t === 'srcipcidr6') return `来源网段 ${p}`;
+  if (t === 'dstport') return `目标端口 ${p}`;
+  if (t === 'srcport') return `来源端口 ${p}`;
+  if (t === 'processname' || t === 'processpath') return `进程 ${p}`;
+  return p ? `${r.type} ${p}` : r.type;
 }
 
 const rulesOf = (name: string) => (data.value?.rules ?? []).filter((r) => r.proxy === name);
+const subRulesOf = (name: string) => (data.value?.subRules ?? []).filter((r) => r.target === name);
+
+// ---- 组内规则显示（哪些地址会被路由到该组）----
+const RULES_PREVIEW = 8;
+const expandedRules = ref<Record<string, boolean>>({});
+function toggleRules(name: string) {
+  expandedRules.value[name] = !expandedRules.value[name];
+}
+type RuleState = { kind: 'active' | 'sub' | 'none'; cls: string; label: string; rules: { type: string; payload: string }[] };
+function groupRuleState(g: ProxyGroupView): RuleState {
+  const active = rulesOf(g.name);
+  if (active.length) return { kind: 'active', cls: 'ok', label: `生效中 · ${active.length}`, rules: active };
+  const sub = subRulesOf(g.name);
+  if (sub.length) return { kind: 'sub', cls: 'warn', label: `订阅定义 · 未生效 · ${sub.length}`, rules: sub };
+  return { kind: 'none', cls: 'muted', label: '无规则', rules: [] };
+}
+function hiddenRuleCount(g: ProxyGroupView): number {
+  const n = groupRuleState(g).rules.length;
+  return expandedRules.value[g.name] ? 0 : Math.max(0, n - RULES_PREVIEW);
+}
+function ruleNoneText(g: ProxyGroupView): string {
+  if (g.name === 'GLOBAL') return '全局模式入口：全局模式下所有流量（含国内）走本组当前选择；规则/直连模式不参与分流';
+  return '无规则指向此组 —— 流量不会自动进来；仅在全局模式手动选本组、或添加规则后才承载流量';
+}
 
 const globalNow = computed(() => groups.value.find((x) => x.name === 'GLOBAL')?.now || '');
 const proxyNow = computed(() => groups.value.find((x) => x.name === 'PROXY')?.now || '');
@@ -314,6 +349,33 @@ onUnmounted(() => {
                 {{ testResults[n].ok ? `${testResults[n].latency}ms` : `✗ ${(testResults[n].error || '').slice(0, 12)}` }}
               </span>
             </div>
+          </div>
+        </div>
+
+        <div class="group-rules">
+          <div class="gr-head" @click="toggleRules(g.name)">
+            <span class="gr-title">路由规则</span>
+            <span :class="['gr-badge', groupRuleState(g).cls]">{{ groupRuleState(g).label }}</span>
+          </div>
+          <template v-if="groupRuleState(g).rules.length">
+            <div
+              v-for="(r, i) in (expandedRules[g.name] ? groupRuleState(g).rules : groupRuleState(g).rules.slice(0, RULES_PREVIEW))"
+              :key="g.name + i"
+              class="gr-line"
+            >
+              <code class="gr-type">{{ r.type }}</code>
+              <span class="gr-addr">{{ ruleLabel(r) }}</span>
+            </div>
+            <div v-if="hiddenRuleCount(g) > 0" class="gr-more" @click="toggleRules(g.name)">
+              +{{ hiddenRuleCount(g) }} 条更多，点击展开
+            </div>
+            <div v-else-if="expandedRules[g.name] && groupRuleState(g).rules.length > RULES_PREVIEW" class="gr-more" @click="toggleRules(g.name)">
+              收起
+            </div>
+          </template>
+          <div v-else class="gr-none">{{ ruleNoneText(g) }}</div>
+          <div v-if="groupRuleState(g).kind === 'sub'" class="gr-note">
+            这些规则来自订阅源、尚未合并进主配置，合并后才会真正参与分流
           </div>
         </div>
 

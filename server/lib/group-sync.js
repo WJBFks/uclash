@@ -133,9 +133,6 @@ export function parseProviderFile(text) {
   return { nodes, groups };
 }
 
-/** 收集所有 provider 缓存：{ 节点名 → provider 名 } + 全部组定义（带 provider 归属）。
- * provider 名从 config.yaml 的 proxy-providers 段（path 文件名）解析，回退为文件名。
- */
 /** config.yaml 实际声明的 provider 名集合（proxy-providers 段）+ default。
  *  mihomo v1.19 的 /providers/proxies 会把注入的订阅组也列进去（长得像 provider），需过滤。 */
 export function configProviderNames() {
@@ -158,7 +155,9 @@ export function configProviderNames() {
   return set;
 }
 
-/**
+/** 收集所有 provider 缓存：{ 节点名 → provider 名 } + 全部组定义（带 provider 归属）。
+ * provider 名从 config.yaml 的 proxy-providers 段（path 文件名）解析，回退为文件名。
+ */
 function collectFromProviders() {
   const dir = path.join(path.dirname(mihomoCfg), 'providers');
   const cfgText = fs.readFileSync(mihomoCfg, 'utf8');
@@ -197,6 +196,68 @@ function collectFromProviders() {
     for (const g of parsed.groups) allGroups.push({ ...g, provider: provName });
   }
   return { nodeToProvider, allGroups };
+}
+
+// 规则末位 policy 关键字（如 IP-CIDR,...,DIRECT,no-resolve 的第 4 段）
+const RULE_POLICY = /^(no-resolve|no-domain|reject|reject-drop|sniff|global)$/i;
+
+/**
+ * 解析 provider 缓存 yaml 顶层 rules: 段。
+ * 行格式：`- TYPE,payload,target[,policy]`；DOMAIN-REGEX 等 payload 含逗号时尽量保留中间段。
+ * 返回 [{ type, payload, target }]
+ */
+export function parseYamlRules(text) {
+  const out = [];
+  let inRules = false;
+  for (const raw of text.split(/\r?\n/)) {
+    if (!inRules) {
+      if (/^rules:\s*$/.test(raw)) inRules = true;
+      continue;
+    }
+    if (/^\S/.test(raw)) break; // 顶层新键 = 段结束
+    const t = raw.trim();
+    if (!t.startsWith('-')) continue; // 空行/注释/非列表行
+    const parts = t.replace(/^\s*-\s*/, '').split(',').map((x) => x.trim());
+    const type = parts[0];
+    let payload, target;
+    if (parts.length === 1) { payload = ''; target = ''; }
+    else if (parts.length === 2) { payload = ''; target = parts[1]; }
+    else if (parts.length >= 4 && RULE_POLICY.test(parts[parts.length - 1])) {
+      payload = parts.slice(1, parts.length - 2).join(',');
+      target = parts[parts.length - 2];
+    } else {
+      payload = parts.slice(1, parts.length - 1).join(',');
+      target = parts[parts.length - 1];
+    }
+    if (type && target) out.push({ type, payload, target });
+  }
+  return out;
+}
+
+/** 收集所有 provider 缓存的 rules 段（去重）：供前端展示“订阅定义但未生效”的规则。 */
+export function readProviderRules() {
+  const dir = path.join(path.dirname(mihomoCfg), 'providers');
+  const out = [];
+  const seen = new Set();
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
+  } catch {
+    return out;
+  }
+  for (const f of files) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(dir, f), 'utf8');
+    } catch {
+      continue;
+    }
+    for (const r of parseYamlRules(text)) {
+      const k = `${r.type}|${r.payload}|${r.target}`;
+      if (!seen.has(k)) { seen.add(k); out.push(r); }
+    }
+  }
+  return out;
 }
 
 /**

@@ -7,7 +7,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { config, PROXY_ON_CONTENT } from './config.js';
 import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, sleep } from './mihomo.js';
-import { syncSubscriptionGroups, configProviderNames } from './lib/group-sync.js';
+import { syncSubscriptionGroups, configProviderNames, readProviderRules } from './lib/group-sync.js';
 
 const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
@@ -192,7 +192,12 @@ const handlers = {
     // 订阅源定义、但 mihomo 未激活的组（provider 只导入节点不导入组）
     const seen = new Set(groups.map((g) => g.name));
     const orphanGroups = readProviderGroups().filter((g) => !seen.has(g.name));
-    return { ok: true, mode, groups, meta, orphanGroups, rules };
+    // 订阅源 yaml 里定义的规则（未合并进主配置，前端展示“定义但未生效”）
+    let subRules = [];
+    try {
+      subRules = readProviderRules();
+    } catch {}
+    return { ok: true, mode, groups, meta, orphanGroups, rules, subRules };
   },
 
   // 切换节点（= clash set）；group 默认 PROXY，全局模式下前端传 GLOBAL

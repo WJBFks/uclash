@@ -42,12 +42,19 @@ export interface RuleInfo {
   proxy: string;
 }
 
+export interface SubRuleInfo {
+  type: string;
+  payload: string;
+  target: string;
+}
+
 export interface ProxiesData {
   mode: string;
   groups: ProxyGroupView[];
   meta?: Record<string, { type?: string; udp?: boolean }>;
   orphanGroups?: OrphanGroup[];
   rules?: RuleInfo[];
+  subRules?: SubRuleInfo[];
 }
 
 export interface ProxySetResult {
