@@ -164,7 +164,6 @@ function onPrefsChanged() {
 watch(testUrl, (v) => setTestUrl(v));
 
 // ---- 组/成员展示 ----
-const GROUP_ICON: Record<string, string> = { Selector: '🎛️', URLTest: '⚡', Fallback: '🛟', LoadBalance: '⚖️' };
 const TYPE_LABEL: Record<string, string> = { Selector: 'selector', URLTest: 'url-test', Fallback: 'fallback', LoadBalance: 'load-balance' };
 const SPECIAL_BADGE: Record<string, string> = { DIRECT: '直连', REJECT: '拒绝' };
 
@@ -308,13 +307,12 @@ onUnmounted(() => {
       <div v-for="g in visibleGroups" :key="g.name" class="card group-card">
         <div class="group-head">
           <div class="gh-left">
-            <span class="gh-icon">{{ GROUP_ICON[g.type] || '📦' }}</span>
-            <h3 class="gh-name">{{ g.name }}</h3>
+            <h3 class="gh-name" :title="g.name">{{ g.name }}</h3>
+            <span class="gh-type">({{ TYPE_LABEL[g.type] || g.type }})</span>
             <HelpTip :text="groupDesc(g)" />
-            <span class="gh-type">{{ TYPE_LABEL[g.type] || g.type }}</span>
           </div>
           <div class="gh-right">
-            <span v-if="g.now" class="gh-now">当前：{{ g.now }}</span>
+            <span v-if="g.now" class="gh-now">当前 {{ g.now }}</span>
             <button
               class="small"
               :disabled="testing || !testableIn(g).length"
