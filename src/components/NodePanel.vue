@@ -2,13 +2,14 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import { useToast } from '@/composables/useToast';
-import type { ProxiesData, ProxyTestData, ProxyTestResult, ProxySetResult } from '@/api/types';
+import { getTestUrl, setTestUrl, PrefsEvent } from '@/utils/prefs';
+import type { ProxiesData, ProxyTestData, ProxyTestResult, ProxySetResult, ModeData, ModeResult } from '@/api/types';
 
 const toast = useToast();
 
 const nodes = ref<ProxiesData>({ now: '', all: [] });
 const filter = ref('');
-const testUrl = ref(localStorage.getItem('cw_test_url') || 'https://www.google.com/generate_204');
+const testUrl = ref(getTestUrl());
 const testResults = ref<Record<string, ProxyTestResult>>({});
 const testing = ref(false);
 const testStatus = ref('');
@@ -16,7 +17,34 @@ const loadError = ref('');
 let inflight = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 
-watch(testUrl, (v) => localStorage.setItem('cw_test_url', v));
+// ---- 代理模式（规则/全局/直连，对应 mihomo config 的 mode）----
+const mode = ref('rule');
+async function loadMode() {
+  try {
+    const d = await api<ModeData>('/mode');
+    mode.value = d.mode;
+  } catch {
+    /* mihomo 未运行时静默 */
+  }
+}
+async function setMode(m: string) {
+  if (m === mode.value) return;
+  const prev = mode.value;
+  mode.value = m; // 乐观更新，失败回弹
+  try {
+    const d = await api<ModeResult>('/mode', { method: 'POST', body: { mode: m } });
+    toast(d.message, d.ok === false);
+  } catch (e) {
+    mode.value = prev;
+    toast(`切换失败: ${e instanceof Error ? e.message : e}`, true);
+  }
+}
+
+function onPrefsChanged() {
+  testUrl.value = getTestUrl();
+}
+
+watch(testUrl, (v) => setTestUrl(v));
 
 const visible = computed(() => {
   const q = filter.value.trim().toLowerCase();
@@ -34,6 +62,10 @@ async function loadNodes() {
   } finally {
     inflight = false;
   }
+}
+
+function metaOf(name: string): { type?: string; udp?: boolean } | undefined {
+  return nodes.value.meta?.[name];
 }
 
 function badgeClass(r: ProxyTestResult): string {
@@ -87,51 +119,73 @@ async function setNode(name: string) {
 
 onMounted(() => {
   loadNodes();
+  loadMode();
   timer = setInterval(loadNodes, 3000);
+  window.addEventListener(PrefsEvent, onPrefsChanged);
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
+  window.removeEventListener(PrefsEvent, onPrefsChanged);
 });
 </script>
 
 <template>
-  <div class="card">
-    <h2>节点切换 <span class="count">{{ visible.length }}</span></h2>
-    <div class="node-search">
-      <input type="text" v-model="filter" placeholder="搜索节点名…" />
+  <div class="card node-page">
+    <!-- 标题行：代理组 + 当前节点 + 模式切换（参考 Clash Verge 布局） -->
+    <div class="np-header">
+      <div class="np-title">
+        <h2>代理组 · PROXY</h2>
+        <span v-if="nodes.now" class="np-now">当前：{{ nodes.now }}</span>
+      </div>
+      <div class="mode-switch" role="group" aria-label="代理模式">
+        <button :class="{ active: mode === 'rule' }" @click="setMode('rule')">规则</button>
+        <button :class="{ active: mode === 'global' }" @click="setMode('global')">全局</button>
+        <button :class="{ active: mode === 'direct' }" @click="setMode('direct')">直连</button>
+      </div>
     </div>
-    <div class="row test-row">
-      <input
-        type="url"
-        v-model="testUrl"
-        placeholder="测试链接（默认 https://www.google.com/generate_204）"
-      />
+
+    <!-- 工具栏：搜索 + 测速 URL + 测试按钮 -->
+    <div class="row np-toolbar">
+      <input type="text" v-model="filter" class="np-search" placeholder="搜索节点…" />
+      <input type="url" v-model="testUrl" class="np-url" placeholder="测速 URL（默认 Google 204）" />
       <button :disabled="testing" @click="runTest(true)">测试选中</button>
       <button class="primary" :disabled="testing" @click="runTest(false)">测试全部</button>
     </div>
-    <div class="node-list">
-      <div v-if="loadError" class="node-empty">{{ loadError }}</div>
-      <div v-else-if="!visible.length" class="node-empty">
+
+    <!-- 节点卡片网格（Clash Verge 风格） -->
+    <div class="node-grid" v-if="!loadError">
+      <div v-if="!visible.length" class="node-empty">
         {{ nodes.all.length ? '无匹配节点' : '暂无节点（mihomo 未运行？）' }}
       </div>
       <div
         v-for="n in visible"
         :key="n"
-        :class="['node-item', { current: n === nodes.now }]"
+        :class="['node-card', { current: n === nodes.now }]"
+        :title="n"
         @click="setNode(n)"
       >
-        <span class="name">{{ n }}</span>
-        <span class="meta">
-          <span v-if="testResults[n]" :class="['tag', badgeClass(testResults[n])]" :title="testResults[n].error || ''">
-            {{ testResults[n].ok ? `${testResults[n].latency}ms` : `✗ ${(testResults[n].error || '').slice(0, 14)}` }}
+        <div class="nc-top">
+          <span class="nc-name">{{ n }}</span>
+          <span v-if="n === nodes.now" class="nc-check">✓</span>
+        </div>
+        <div class="nc-badges">
+          <span v-if="metaOf(n)?.type" class="badge">{{ metaOf(n)!.type }}</span>
+          <span v-if="metaOf(n)?.udp" class="badge">UDP</span>
+          <span
+            v-if="testResults[n]"
+            :class="['badge', 'lat', badgeClass(testResults[n])]"
+            :title="testResults[n].error || ''"
+          >
+            {{ testResults[n].ok ? `${testResults[n].latency}ms` : `✗ ${(testResults[n].error || '').slice(0, 12)}` }}
           </span>
-          <span v-if="n === nodes.now" class="tag cur">← 当前</span>
-        </span>
+        </div>
       </div>
     </div>
+    <div v-else class="node-empty">{{ loadError }}</div>
+
     <div v-if="testStatus" class="hint testing"><span class="dot warn"></span>{{ testStatus }}</div>
     <div class="hint">
-      点击节点立即切换（= <code>clash set</code>）；列表每 3 秒自动刷新；延迟测试走 mihomo 原生 healthcheck、并发、单项 10s 超时，不切换当前节点、互不干扰
+      点击卡片立即切换（= <code>clash set</code>）；列表每 3 秒自动刷新；测速走 mihomo 原生 healthcheck、并发、单项 10s 超时，不影响当前节点
     </div>
   </div>
 </template>

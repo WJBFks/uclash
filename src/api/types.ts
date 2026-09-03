@@ -24,6 +24,7 @@ export interface ProxyEnvResult {
 export interface ProxiesData {
   now: string;
   all: string[];
+  meta?: Record<string, { type?: string; udp?: boolean }>;
 }
 
 export interface ProxySetResult {
@@ -78,8 +79,18 @@ export interface ConnectionsData {
   connections: ConnectionItem[];
 }
 
+export interface ProviderInfo {
+  name?: string;
+  type?: string;
+  url?: string;
+  interval?: number;
+  count?: number;
+  [k: string]: unknown;
+}
+
 export interface SubscriptionsData {
   subscriptions: string[];
+  providers?: Record<string, ProviderInfo> | ProviderInfo[];
 }
 
 export interface SubRefreshItem {
@@ -103,4 +114,26 @@ export interface ImportData {
 
 export interface VersionData {
   version: string | null;
+}
+
+export interface ModeData {
+  mode: string;
+}
+
+export interface ModeResult {
+  ok: boolean;
+  message: string;
+}
+
+export interface LogsData {
+  lines: string[];
+}
+
+export interface ConfigInfoData {
+  webPort: number;
+  mihomoApi: string;
+  mihomoBin: string;
+  mihomoCfg: string;
+  providersDir: string;
+  proxyOnFile: string;
 }

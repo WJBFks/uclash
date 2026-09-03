@@ -62,12 +62,31 @@ const handlers = {
     return { ok: true, message: 'clash 终端代理已关闭（如需关闭全局 TUN，用停止服务）' };
   },
 
-  // 节点列表（= clash list）
+  // 节点列表（= clash list）+ 协议/UDP 详情
   async 'GET /api/proxies'() {
     const r = await httpJson(mihomoApi + '/proxies/PROXY');
     if (!r.ok || !r.json) return { ok: false, error: '获取节点列表失败（mihomo 服务未运行？）' };
     // 注意：节点名保留原样（部分节点名含前导/尾随空格，trim 后 PUT 会 400）
-    return { ok: true, now: (r.json.now || '').trim(), all: (r.json.all || []).map((n) => String(n)) };
+    const all = (r.json.all || []).map((n) => String(n));
+    // 顶层 /proxies/PROXY 只有名字，协议/UDP 详情需逐 provider 取
+    const meta = {};
+    const GROUP_TYPES = new Set(['Selector', 'URLTest', 'Fallback', 'LoadBalance', 'Direct', 'Reject', 'Pass', 'PassRule', 'RejectDrop', 'Compatible']);
+    const provR = await httpJson(mihomoApi + '/providers/proxies');
+    if (provR.ok && provR.json && provR.json.providers) {
+      const provObj = provR.json.providers;
+      const provNames = Array.isArray(provObj) ? provObj.map((p) => p.name) : Object.keys(provObj);
+      for (const pn of provNames) {
+        try {
+          const det = await httpJson(mihomoApi + '/providers/proxies/' + encodeURIComponent(pn));
+          if (det.ok && det.json && Array.isArray(det.json.proxies)) {
+            for (const p of det.json.proxies) {
+              if (p && p.name && !GROUP_TYPES.has(p.type)) meta[p.name] = { type: p.type || '', udp: !!p.udp };
+            }
+          }
+        } catch {}
+      }
+    }
+    return { ok: true, now: (r.json.now || '').trim(), all, meta };
   },
 
   // 切换节点（= clash set）
@@ -239,6 +258,41 @@ const handlers = {
     const api = await httpJson(mihomoApi + '/version');
     if (api.ok && api.json) return { ok: true, version: api.json.version || null };
     return { ok: false, error: '无法获取 mihomo 版本' };
+  },
+
+  // mihomo 最近日志（设置页用）
+  async 'GET /api/logs'({}) {
+    const r = await run('journalctl', ['--user', '-u', 'mihomo', '-n', '200', '--no-pager'], 15000);
+    if (r.code !== 0) return { ok: false, error: '读取日志失败：' + ((r.stderr || '').slice(-200) || '未知错误') };
+    return { ok: true, lines: r.stdout.split('\n') };
+  },
+
+  // 代理模式（rule / global / direct，对应 Clash Verge 的 规则/全局/直连）
+  async 'GET /api/mode'() {
+    const r = await httpJson(mihomoApi + '/configs');
+    if (!r.ok || !r.json) return { ok: false, error: '获取模式失败（mihomo 未运行？）' };
+    return { ok: true, mode: r.json.mode || 'rule' };
+  },
+
+  async 'POST /api/mode'({ mode }) {
+    if (!['rule', 'global', 'direct'].includes(mode)) return { ok: false, error: 'invalid mode' };
+    const r = await httpJson(mihomoApi + '/configs', 'PUT', { mode });
+    if (!r.ok) return { ok: false, error: '切换失败（mihomo API 无响应）' };
+    const label = { rule: '规则', global: '全局', direct: '直连' }[mode];
+    return { ok: true, message: `已切换到${label}模式` };
+  },
+
+  // 系统配置信息（设置页用）
+  async 'GET /api/config-info'() {
+    return {
+      ok: true,
+      webPort: config.port,
+      mihomoApi: config.mihomoApi,
+      mihomoBin: config.mihomoBin,
+      mihomoCfg: config.mihomoCfg,
+      providersDir: path.join(path.dirname(config.mihomoCfg), 'providers'),
+      proxyOnFile: config.proxyOnFile,
+    };
   },
 };
 

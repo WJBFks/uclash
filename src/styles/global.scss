@@ -15,21 +15,95 @@ body {
   line-height: 1.5;
 }
 
+// 布局：左侧边栏 + 主内容区
+.layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  background: #fff;
+  border-right: 1px solid $border;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 12px 14px;
+
+  .brand {
+    padding: 0 10px 14px;
+    border-bottom: 1px solid $border;
+    margin-bottom: 12px;
+
+    .brand-name { font-size: 17px; font-weight: 700; }
+    .brand-sub { font-size: 11px; color: $muted; margin-top: 2px; }
+  }
+
+  .side-foot {
+    border-top: 1px solid $border;
+    padding: 10px;
+    font-size: 12px;
+
+    .side-node { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+    .side-ver { font-size: 11px; }
+  }
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: $text;
+  font-size: 14px;
+  transition: all 0.15s;
+
+  &:hover { background: #f3f4f6; }
+  &.active { background: $accent-soft; color: $accent; font-weight: 600; }
+  .nav-icon { font-size: 15px; width: 20px; text-align: center; }
+}
+
+.main { flex: 1; min-width: 0; }
+
 .wrap {
   max-width: 1080px;
   margin: 0 auto;
   padding: 20px 16px 48px;
 }
 
-header.top {
+.page-title {
   display: flex;
   align-items: baseline;
   gap: 12px;
   margin-bottom: 16px;
-  flex-wrap: wrap;
 
   h1 { font-size: 20px; font-weight: 700; }
   .ver { color: $muted; font-size: 12px; }
+}
+
+@media (max-width: 720px) {
+  .layout { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    border-right: none;
+    border-bottom: 1px solid $border;
+
+    .brand { border: none; margin: 0; padding: 0 8px 0 0; .brand-sub { display: none; } }
+    .nav { flex-direction: row; flex: 1; overflow-x: auto; }
+    .side-foot { display: none; }
+    .nav-item { padding: 6px 10px; white-space: nowrap; }
+  }
 }
 
 .grid {
@@ -216,57 +290,177 @@ code {
   }
 }
 
-// 节点列表
-.node-search { margin-bottom: 10px; }
-.test-row input { flex: 1; min-width: 220px; }
-
-.node-list {
-  max-height: 320px;
-  overflow-y: auto;
-  border: 1px solid $border;
-  border-radius: 8px;
+// 节点页（参考 Clash Verge 代理组卡片网格）
+.node-page {
+  max-width: 1060px;
+  margin: 0 auto;
 }
 
-.node-item {
-  padding: 8px 14px;
-  cursor: pointer;
-  border-bottom: 1px solid #f0f1f3;
+.np-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
 
-  &:last-child { border-bottom: none; }
-  &:hover { background: $accent-soft; }
-
-  &.current {
-    background: $green-soft;
-    font-weight: 600;
-
-    .tag.cur { color: $green; font-size: 12px; font-weight: 600; flex-shrink: 0; }
-  }
-
-  .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .meta {
+  .np-title {
     display: flex;
-    gap: 10px;
-    align-items: center;
-    flex-shrink: 0;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
 
-    .tag {
-      font-weight: 600;
+    h2 {
+      font-size: 18px;
+      font-weight: 700;
+      color: $text;
+      text-transform: none;
+      letter-spacing: 0;
+      margin: 0;
+    }
 
-      &.good { color: $green; }
-      &.mid { color: $amber; }
-      &.slow { color: $red; }
-      &.fail { color: $red; font-weight: 400; }
+    .np-now {
+      font-size: 13px;
+      color: $muted;
+
+      b { color: $text; }
     }
   }
 }
 
-.node-empty { padding: 24px; text-align: center; color: $muted; }
-.testing { display: flex; align-items: center; }
+.mode-switch {
+  display: flex;
+  gap: 4px;
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 3px;
+
+  button {
+    padding: 5px 14px;
+    font-size: 12.5px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: $muted;
+
+    &:hover { color: $accent; }
+
+    &.active {
+      background: $accent;
+      color: #fff;
+      font-weight: 600;
+
+      &:hover { color: #fff; }
+    }
+  }
+}
+
+.np-toolbar {
+  margin-bottom: 12px;
+
+  .np-search {
+    flex: 1;
+    min-width: 160px;
+  }
+
+  .np-url {
+    flex: 1.6;
+    min-width: 220px;
+  }
+}
+
+.node-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.node-card {
+  border: 1.5px solid $border;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  background: #fff;
+  transition: border-color 0.12s, box-shadow 0.12s;
+  user-select: none;
+
+  &:hover {
+    border-color: $accent;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12);
+  }
+
+  &.current {
+    border-color: $accent;
+    background: $accent-soft;
+
+    .nc-name { color: $accent; }
+  }
+
+  .nc-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .nc-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nc-check {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: $accent;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .nc-badges {
+    display: flex;
+    gap: 5px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: #f0f1f3;
+    color: $muted;
+    font-weight: 600;
+  }
+
+  .badge.lat {
+    &.good { color: $green; background: $green-soft; }
+    &.mid { color: $amber; background: $amber-soft; }
+    &.slow { color: $red; background: $red-soft; }
+    &.fail { color: $red; background: $red-soft; font-weight: 400; }
+  }
+}
+
+// 订阅表格
+.sub-table {
+  margin-top: 10px;
+
+  .sub-name { font-weight: 600; white-space: nowrap; }
+  .sub-url {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11.5px;
+    color: $muted;
+  }
+}
 
 // 流量图
 .traffic-read {
