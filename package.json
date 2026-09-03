@@ -1,0 +1,10 @@
+{
+  "name": "clash-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "mihomo 代理管理 Web UI（对应 ~/.zshrc 的 clash 命令集），零依赖 Node 后端 + 单文件前端，监听 15924 端口",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
