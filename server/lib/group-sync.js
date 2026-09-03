@@ -17,6 +17,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import { httpJson, sleep } from '../mihomo.js';
 
@@ -24,6 +25,9 @@ const { mihomoApi, mihomoCfg } = config;
 
 const MARK_START = '# >>> 订阅分组（clash-web 自动生成，刷新订阅时重建，请勿手改）>>>';
 const MARK_END = '# <<< 订阅分组（clash-web 自动生成）<<<';
+// 订阅规则注入块（选中订阅源后，其 rules 段合并进主配置；恢复默认时移除）
+const RULES_MARK_START = '# >>> 订阅规则（clash-web 自动生成，切换/刷新订阅时重建，请勿手改）>>>';
+const RULES_MARK_END = '# <<< 订阅规则（clash-web 自动生成）<<<';
 
 // mihomo 内置特殊代理名 + 主配置内置组名（注入时重名跳过；引用时视为合法目标）
 const RESERVED = new Set([
@@ -197,12 +201,18 @@ export function readConfigProviders() {
   return out;
 }
 
-// 剔除自动注入块（其 use: 引用由 group-sync 管理，不算「用户选择」）
-const MARK_RE = new RegExp(
-  `^${MARK_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$[\\s\\S]*?^${MARK_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`,
-  'm',
-);
-const stripInjectedBlock = (text) => text.replace(MARK_RE, '');
+// 剔除自动注入块（其内容由 group-sync 管理，不算「用户选择」）。按整行匹配两个块的标记。
+function stripInjectedBlocks(lines) {
+  const out = [];
+  let skipping = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (t === MARK_START || t === RULES_MARK_START) { skipping = true; continue; }
+    if (t === MARK_END || t === RULES_MARK_END) { skipping = false; continue; }
+    if (!skipping) out.push(line);
+  }
+  return out;
+}
 
 /**
  * 「当前选中」的订阅源：主配置（注入块之外）use: 引用到的已声明 provider 名集合。
@@ -248,12 +258,12 @@ export function findProviderRefs(providerName) {
   } catch {
     return [];
   }
-  const stripped = stripInjectedBlock(text);
+  const stripped = stripInjectedBlocks(text.split(/\r?\n/));
   const refs = [];
   let inGroups = false;
   let inUse = false;
   let lastGroup = '';
-  for (const line of stripped.split(/\r?\n/)) {
+  for (const line of stripped) {
     if (/^proxy-groups:\s*$/.test(line)) { inGroups = true; inUse = false; continue; }
     if (inGroups && /^\S/.test(line)) break;
     if (!inGroups) continue;
@@ -270,6 +280,59 @@ export function findProviderRefs(providerName) {
     }
   }
   return [...new Set(refs)];
+}
+
+// ---- 选中源状态与默认配置备份 ----
+const STATE_FILE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '.pi', 'wj', 'clash-web', 'selected.json',
+);
+const BASE_BACKUP = mihomoCfg + '.wjbase';
+
+/** 读取当前选中的订阅源（'default' 或 provider 名）。
+ *  无状态文件时回退：从已注入分组块的 use: 引用推断，推不出则为 'default'。 */
+export function getSelectedSource() {
+  try {
+    const st = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    if (typeof st.selected === 'string' && st.selected) return st.selected;
+  } catch {}
+  try {
+    const text = fs.readFileSync(mihomoCfg, 'utf8');
+    let inBlock = false, inUse = false;
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (t === MARK_START) { inBlock = true; inUse = false; continue; }
+      if (t === MARK_END) { inBlock = false; continue; }
+      if (!inBlock) continue;
+      if (/^use:\s*$/.test(t)) { inUse = true; continue; }
+      if (inUse) {
+        const m = t.match(/^-\s*([\w-]+)\s*$/);
+        if (m && m[1] !== 'default') return m[1];
+        inUse = false;
+      }
+    }
+  } catch {}
+  return 'default';
+}
+
+export function setSelectedSource(name) {
+  try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ selected: name, at: new Date().toISOString() }, null, 2) + '\n');
+  } catch (e) {
+    console.warn('[group-sync] 写入选中源状态失败:', e.message || e);
+  }
+}
+
+/** 原始配置快照（首次注入/恢复时创建，之后不覆盖）：默认配置的备份与恢复点。 */
+export function ensureBaseBackup() {
+  if (fs.existsSync(BASE_BACKUP)) return;
+  try {
+    const cur = fs.readFileSync(mihomoCfg, 'utf8');
+    fs.writeFileSync(BASE_BACKUP, stripInjectedBlocks(cur.split(/\r?\n/)).join('\n'));
+  } catch (e) {
+    console.warn('[group-sync] 创建默认配置快照失败:', e.message || e);
+  }
 }
 
 /** 收集所有 provider 缓存：{ 节点名 → provider 名 } + 全部组定义（带 provider 归属）。
@@ -319,12 +382,25 @@ function collectFromProviders(activeNames = null) {
 // 规则末位 policy 关键字（如 IP-CIDR,...,DIRECT,no-resolve 的第 4 段）
 const RULE_POLICY = /^(no-resolve|no-domain|reject|reject-drop|sniff|global)$/i;
 
-/**
- * 解析 provider 缓存 yaml 顶层 rules: 段。
- * 行格式：`- TYPE,payload,target[,policy]`；DOMAIN-REGEX 等 payload 含逗号时尽量保留中间段。
- * 返回 [{ type, payload, target }]
- */
-export function parseYamlRules(text) {
+// 解析单条规则内容（去掉前导 "- " 之后）：TYPE,payload,target[,policy]
+function parseRuleLine(content) {
+  const parts = content.split(',').map((x) => x.trim());
+  const type = parts[0];
+  let payload, target;
+  if (parts.length === 1) { payload = ''; target = ''; }
+  else if (parts.length === 2) { payload = ''; target = parts[1]; }
+  else if (parts.length >= 4 && RULE_POLICY.test(parts[parts.length - 1])) {
+    payload = parts.slice(1, parts.length - 2).join(',');
+    target = parts[parts.length - 2];
+  } else {
+    payload = parts.slice(1, parts.length - 1).join(',');
+    target = parts[parts.length - 1];
+  }
+  return { type, payload, target };
+}
+
+/** 提取 provider 缓存 yaml 顶层 rules: 段的原始规则行（保留原文，含 policy 参数），供注入主配置。 */
+export function extractRuleLines(text) {
   const out = [];
   let inRules = false;
   for (const raw of text.split(/\r?\n/)) {
@@ -334,20 +410,21 @@ export function parseYamlRules(text) {
     }
     if (/^\S/.test(raw)) break; // 顶层新键 = 段结束
     const t = raw.trim();
-    if (!t.startsWith('-')) continue; // 空行/注释/非列表行
-    const parts = t.replace(/^\s*-\s*/, '').split(',').map((x) => x.trim());
-    const type = parts[0];
-    let payload, target;
-    if (parts.length === 1) { payload = ''; target = ''; }
-    else if (parts.length === 2) { payload = ''; target = parts[1]; }
-    else if (parts.length >= 4 && RULE_POLICY.test(parts[parts.length - 1])) {
-      payload = parts.slice(1, parts.length - 2).join(',');
-      target = parts[parts.length - 2];
-    } else {
-      payload = parts.slice(1, parts.length - 1).join(',');
-      target = parts[parts.length - 1];
-    }
-    if (type && target) out.push({ type, payload, target });
+    if (t === '-' || t.startsWith('- ')) out.push(t.replace(/^\s*-\s*/, '').trim());
+  }
+  return out;
+}
+
+/**
+ * 解析 provider 缓存 yaml 顶层 rules: 段。
+ * 行格式：`- TYPE,payload,target[,policy]`；DOMAIN-REGEX 等 payload 含逗号时尽量保留中间段。
+ * 返回 [{ type, payload, target }]
+ */
+export function parseYamlRules(text) {
+  const out = [];
+  for (const content of extractRuleLines(text)) {
+    const r = parseRuleLine(content);
+    if (r.type && r.target) out.push(r);
   }
   return out;
 }
@@ -379,6 +456,71 @@ export function readProviderRules(activeNames = null) {
     }
   }
   return out;
+}
+
+/** 顶层段范围（start = 段头行号，end = 下一个顶层键行号/文件尾）。 */
+function sectionRange(lines, key) {
+  const start = lines.findIndex((l) => new RegExp(`^${key}:\\s*$`).test(l));
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\S/.test(lines[i])) { end = i; break; }
+  }
+  return { start, end };
+}
+
+/** 注入块外主配置的组名列表。 */
+function baseGroupNames(lines) {
+  const out = [];
+  const r = sectionRange(lines, 'proxy-groups');
+  if (!r) return out;
+  for (let i = r.start + 1; i < r.end; i++) {
+    const m = lines[i].match(/^\s*-\s*name:\s*(.+)$/);
+    if (m) out.push(unq(m[1]));
+  }
+  return out;
+}
+
+/** 注入块外主配置的组数与规则数（用于「默认配置」卡片展示）。 */
+export function readBaseSectionCounts() {
+  let text = '';
+  try { text = fs.readFileSync(mihomoCfg, 'utf8'); } catch { return { groups: 0, rules: 0 }; }
+  const lines = stripInjectedBlocks(text.split(/\r?\n/));
+  const pg = sectionRange(lines, 'proxy-groups');
+  let groups = 0;
+  if (pg) for (let i = pg.start + 1; i < pg.end; i++) if (/^\s*-\s*name:/.test(lines[i])) groups++;
+  const rs = sectionRange(lines, 'rules');
+  let rules = 0;
+  if (rs) for (let i = rs.start + 1; i < rs.end; i++) { const t = lines[i].trim(); if (t === '-' || t.startsWith('- ')) rules++; }
+  return { groups, rules };
+}
+
+/** 读取订阅源缓存文件文本（优先 config 声明的 path，回退 providers/<name>.yaml）。 */
+function providerFileText(name) {
+  const cp = readConfigProviders().find((p) => p.name === name);
+  const cands = [];
+  if (cp && cp.path) cands.push(path.resolve(path.dirname(mihomoCfg), cp.path));
+  cands.push(path.join(path.dirname(mihomoCfg), 'providers', `${name}.yaml`));
+  for (const f of cands) {
+    try { return fs.readFileSync(f, 'utf8'); } catch {}
+  }
+  return '';
+}
+
+/** 把订阅规则块插入 rules: 段：插在最后一条 MATCH 规则之前（无 MATCH 则插到段尾；无 rules: 段则新建于文件尾）。 */
+function insertRulesBlock(lines, block) {
+  const r = sectionRange(lines, 'rules');
+  if (!r) {
+    const out = lines.slice();
+    while (out.length && out[out.length - 1].trim() === '') out.pop();
+    return [...out, 'rules:', ...block];
+  }
+  let at = r.end;
+  for (let i = r.start + 1; i < r.end; i++) {
+    const t = lines[i].trim();
+    if (/^MATCH([,\s]|$)/.test(t.replace(/^[-\s]+/, ''))) at = i;
+  }
+  return [...lines.slice(0, at), ...block, ...lines.slice(at)];
 }
 
 /**
@@ -434,39 +576,64 @@ function buildGroupLines(allGroups, nodeToProvider, existingNames) {
   return { lines: picked.flatMap((p) => p.lines), picked, dropped };
 }
 
-/** 生成候选配置：删旧注入块 → 重建注入块（插在 proxy-groups: 之后）。返回 { candidate, picked, dropped, changed } 或 { error } */
-function buildCandidate() {
-  // 只注入「当前选中」订阅源的组；无选中源时回退为全部源（保持旧行为）
-  const active = activeProviderNames();
-  const { nodeToProvider, allGroups } = collectFromProviders(active.length ? active : null);
+/** 生成候选配置：删旧注入块（组+规则）→ 按选中源重建（插在 proxy-groups: 之后 / rules: 段内）。
+ * selected='default' 时移除全部注入块（恢复原始规则与组）。
+ * 返回 { candidate, picked, dropped, ruleCount, droppedRules, changed } 或 { error } */
+function buildCandidate(selected) {
   const cfgText = fs.readFileSync(mihomoCfg, 'utf8');
-  const lines = cfgText.split(/\r?\n/);
+  let lines = stripInjectedBlocks(cfgText.split(/\r?\n/));
+  const isSub = selected !== 'default';
+  let picked = [], dropped = [], ruleCount = 0, droppedRules = 0;
 
-  // 删旧注入块
-  const out = [];
-  let skipping = false;
-  for (const line of lines) {
-    const t = line.trim();
-    if (t === MARK_START) { skipping = true; continue; }
-    if (t === MARK_END) { skipping = false; continue; }
-    if (skipping) continue;
-    out.push(line);
+  if (isSub) {
+    const { nodeToProvider, allGroups } = collectFromProviders([selected]);
+
+    // ---- 组注入块（插在 proxy-groups: 之后）----
+    if (allGroups.length) {
+      const idx = lines.findIndex((l) => /^proxy-groups:\s*$/.test(l));
+      if (idx === -1) return { error: 'config.yaml 未找到 proxy-groups 段，无法自动注入订阅组' };
+      // 主配置现有组名（注入时跳过重名）
+      const pg = sectionRange(lines, 'proxy-groups');
+      const existingNames = new Set();
+      for (let i = pg.start + 1; i < pg.end; i++) {
+        const m = lines[i].match(/^\s*-\s*name:\s*(.+)$/);
+        if (m) existingNames.add(unq(m[1]));
+      }
+      const bg = buildGroupLines(allGroups, nodeToProvider, existingNames);
+      // 注意：不要在块外额外插入空行（strip 不会移除块外空行，会导致每次 sync 空行累积、changed 恒为 true）
+      lines = [...lines.slice(0, idx + 1), MARK_START, ...bg.lines, MARK_END, ...lines.slice(idx + 1)];
+      picked = bg.picked;
+      dropped = bg.dropped;
+    }
+
+    // ---- 规则合并块（插入 rules: 段内，原基础规则原样保留，MATCH 兜底留在最后）----
+    const text = providerFileText(selected);
+    if (text) {
+      const raw = extractRuleLines(text);
+      // 合法目标：内置特殊名 + 主配置现有组 + 本次注入的组 + 选中源节点（运行时均为合法代理名）
+      const valid = new Set([
+        ...RESERVED,
+        ...baseGroupNames(stripInjectedBlocks(cfgText.split(/\r?\n/))),
+        ...picked.map((g) => g.name),
+        ...nodeToProvider.keys(),
+      ]);
+      const kept = [];
+      for (const l of raw) {
+        const r = parseRuleLine(l);
+        if (r && r.target && valid.has(r.target)) kept.push(l);
+        else droppedRules++;
+      }
+      if (kept.length) {
+        const block = [RULES_MARK_START, ...kept.map((l) => '  - ' + l), RULES_MARK_END];
+        lines = insertRulesBlock(lines, block);
+      }
+      ruleCount = kept.length;
+    }
   }
 
-  const idx = out.findIndex((l) => /^proxy-groups:\s*$/.test(l));
-  if (idx === -1) return { error: 'config.yaml 未找到 proxy-groups 段，无法自动注入订阅组' };
-
-  // 主配置现有组名（注入时跳过重名）
-  const existingNames = new Set();
-  for (const line of out) {
-    const m = line.match(/^\s*-\s*name:\s*(.+)$/);
-    if (m) existingNames.add(unq(m[1]));
-  }
-
-  const { lines: blockLines, picked, dropped } = buildGroupLines(allGroups, nodeToProvider, existingNames);
-  const candidate = [...out.slice(0, idx + 1), '', MARK_START, ...blockLines, MARK_END, ...out.slice(idx + 1)].join('\n');
+  const candidate = lines.join('\n');
   if (process.env.GROUP_SYNC_DEBUG) fs.writeFileSync('/tmp/group-sync-candidate.yaml', candidate);
-  return { candidate, picked, dropped, changed: candidate !== cfgText };
+  return { candidate, picked, dropped, ruleCount, droppedRules, changed: candidate !== cfgText };
 }
 
 /** 记录各组当前选择（热加载前） */
@@ -509,20 +676,22 @@ async function hotReload() {
 
 /**
  * 完整流程：记录选择 → 生成候选 → 备份写盘 → 热加载（被拒则回滚）→ 恢复选择。
- * 幂等：配置无变化时跳过热加载。
+ * 幂等：配置无变化时跳过热加载。selected 缺省取 getSelectedSource()。
  */
-export async function syncSubscriptionGroups() {
+export async function syncSubscriptionGroups(selected = null) {
+  const target = selected || getSelectedSource();
   let built;
   try {
-    built = buildCandidate();
+    built = buildCandidate(target);
   } catch (e) {
     return { ok: false, error: '生成候选配置失败: ' + (e.message || e) };
   }
   if (built.error) return { ok: false, error: built.error };
-  const { candidate, picked, dropped } = built;
+  const { candidate, picked, dropped, ruleCount } = built;
 
   if (!built.changed) {
-    return { ok: true, injected: picked.length, changed: false, note: '订阅组配置无变化，跳过重载', names: picked.map((b) => b.name) };
+    setSelectedSource(target);
+    return { ok: true, injected: picked.length, rules: ruleCount, changed: false, note: '订阅组/规则配置无变化，跳过重载', names: picked.map((b) => b.name) };
   }
 
   // 备份 → 写盘 → 热加载（mihomo 对非法配置返回 400 且继续跑旧配置 = 天然校验）
@@ -542,14 +711,48 @@ export async function syncSubscriptionGroups() {
     return { ok: false, error: '热加载被 mihomo 拒绝（候选配置无效），已回滚: ' + rl.error, rolledBack: true, backup: bak };
   }
   const restored = await restoreSelections(sels);
+  setSelectedSource(target);
   return {
     ok: true,
     injected: picked.length,
+    rules: ruleCount,
     changed: true,
     reloaded: true,
     restored,
     backup: bak,
     names: picked.map((b) => b.name),
     dropped: dropped.length ? dropped : undefined,
+    droppedRules: built.droppedRules || undefined,
   };
+}
+
+/** 恢复默认配置（原始配置快照：无注入的订阅组/规则）——「默认配置」卡片的激活动作。 */
+export async function restoreDefaultConfig() {
+  ensureBaseBackup();
+  if (!fs.existsSync(BASE_BACKUP)) return { ok: false, error: '默认配置快照不存在，无法恢复' };
+  let base, cur;
+  try {
+    base = fs.readFileSync(BASE_BACKUP, 'utf8');
+    cur = fs.readFileSync(mihomoCfg, 'utf8');
+  } catch (e) {
+    return { ok: false, error: '读取配置失败: ' + (e.message || e) };
+  }
+  if (base === cur) return { ok: true, changed: false, note: '当前已是默认配置' };
+  const sels = await captureSelections();
+  const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '');
+  const bak = `${mihomoCfg}.bak.default.${ts}`;
+  try {
+    fs.copyFileSync(mihomoCfg, bak);
+    fs.writeFileSync(mihomoCfg, base);
+  } catch (e) {
+    return { ok: false, error: '写入 config.yaml 失败: ' + (e.message || e) };
+  }
+  const rl = await hotReload();
+  if (!rl.ok) {
+    try { fs.copyFileSync(bak, mihomoCfg); } catch {}
+    return { ok: false, error: '热加载被 mihomo 拒绝，已回滚: ' + rl.error, rolledBack: true, backup: bak };
+  }
+  await restoreSelections(sels);
+  setSelectedSource('default');
+  return { ok: true, changed: true, reloaded: true, backup: bak };
 }

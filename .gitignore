@@ -18,3 +18,7 @@ server/lib/__pycache__/
 
 # 参考代码（Clash Verge 开源项目，仅本地参考用）
 clash-verge-rev/
+6f422ee0-33c1-4e25-9e0d-0f1b3fb30391.png
+
+# TS 增量构建缓存
+tsconfig.*.tsbuildinfo

@@ -51,7 +51,7 @@ src/                   # Vue3 + TS + SCSS 前端
 | 终端代理开关 | `on/off` | `POST /api/proxy-env`（写/删 `~/.clash_proxy_on`，新终端生效） |
 | 节点列表 + 切换 | `list/set` | `GET /api/proxies` / `POST /api/proxy-set` |
 | 节点延迟测试 | —（扩展） | `POST /api/proxy-test`（mihomo 原生 healthcheck，全并发、单项 10s 超时，不切选择器） |
-| 订阅列表（含用量/到期）/ 刷新 / 激活 / 删除 | `update` | `GET /api/subscriptions`（声明 ∪ 本地缓存源，含 declared/active 标记）/ `GET /api/subscriptions/userinfo` / `POST /api/subscriptions/refresh` / `POST /api/subscriptions/activate`（注入主配置）/ `POST /api/subscriptions/delete` |
+| 订阅列表（含用量/到期）/ 刷新 / 激活 / 删除 | `update` | `GET /api/subscriptions`（内置「默认配置」卡片 ∪ 声明 ∪ 本地缓存源，含 builtin/declared/active 标记）/ `GET /api/subscriptions/userinfo` / `POST /api/subscriptions/refresh` / `POST /api/subscriptions/activate`（注入主配置；`default` = 恢复原始配置）/ `POST /api/subscriptions/delete`（default 不可删） |
 | 导入订阅源 | `import` | `POST /api/import`（备份 → 改配置 → 热加载，失败回滚） |
 | 实时流量 | —（扩展） | `GET /api/traffic`（后端 2s 采样、120 点环形缓冲） |
 | 连接列表 / 关闭 | —（扩展） | `GET /api/connections` / `DELETE /api/connections` |
@@ -62,7 +62,10 @@ src/                   # Vue3 + TS + SCSS 前端
 - **节点测试**：走 mihomo 原生 `/providers/proxies/{p}/{n}/healthcheck`，不切换当前选择器、互不干扰；节点归属 provider 由 `/providers/proxies` 反查。
 - **订阅刷新 / 导入的热加载**：`PUT /configs` 必须带 `{"path": ...}` body（mihomo v1.19 对空 body 返回 400）；热加载后等 6s 并比对 `~/.config/mihomo/providers/*.yaml` 的 mtime，区分「已更新 / 无变化（源不可达，仍在用旧节点）/ 服务未运行 / 请求被拒」——API 调通 ≠ 订阅真的拉到。
 - **订阅列表**：mihomo v1.19 无 `/subscriptions` 端点（clash premium 功能），权威列表 = config.yaml `proxy-providers` 声明 ∪ `~/.config/mihomo/providers/*.yaml` 缓存文件；未声明源的 URL 从缓存文件 `#!MANAGED-CONFIG` 头回退解析；用量/到期来自订阅 URL 响应头 `subscription-userinfo`（经 mihomo 出口拉取，10min 缓存）。
-- **激活订阅源（注入主配置）**：独占语义——`POST /api/subscriptions/activate` 把注入块之外的主配置组 `use:` 全部改指向目标源（未声明的源先自动补 proxy-providers 声明），热加载后重建订阅组；`active` = 有主配置组引用该源。删除被主配置组引用的源会被拒绝；仅本地缓存的源直接删文件。
-- **组注入/代理组页按「当前选中源」过滤**：group-sync 只收集被主配置（注入块外）`use:` 引用到的 provider（`activeProviderNames()`，无引用时回退全部源）；代理组页的未激活组（orphanGroups）与订阅规则（subRules）同样只显示当前选中源，多源时不串台。
+- **激活订阅源（注入主配置，独占语义）**：选中源记录在 `.pi/wj/clash-web/selected.json`（状态文件为唯一事实源，重复激活被拒）。激活源 X 做两件事：① PSWITCH 把注入块之外主配置组的 `use:` 全部改指向 X（未声明的源先自动补 proxy-providers 声明）；② group-sync 把 X 的 `proxy-groups` 与 `rules` 合并注入主配置（两个自动生成块，写前备份、热加载被拒则回滚、各组选择 capture/restore）。
+- **「默认配置」卡片（内置，不可删除）**：首次激活任一订阅源前，`ensureBaseBackup()` 保存原始配置快照 `config.yaml.wjbase`；激活 `default` = 剥离全部注入块、恢复原始规则/组（兼作备份与测试基线），订阅源声明与缓存文件均保留、可随时重新激活。
+- **规则合并细节**：订阅 yaml 的 `rules:` 段原样行（保留 no-resolve 等参数）注入主配置 `rules:` 段内**最后一条 MATCH 之前**，基础规则原样保留；注入前按目标合法性过滤（内置特殊名 + 主配置现有组 + 本次注入组 + 该源节点名），避免悬空目标导致热加载 400。
+- **组注入/代理组页按「当前选中源」过滤**：group-sync 与 `GET /api/proxies` 的 orphanGroups/subRules 均按 `getSelectedSource()` 过滤（选中 default 时为空）；多源时不串台。
+- **注入块幂等**：两个自动块（组块/规则块）以 `# >>> … # <<<` 标记包裹、整体 strip 后重建，块外不额外写入空行，保证无变化时 `changed=false`、不触发多余热加载。
 - **节点名保留原样**：部分节点名含前导/尾随空格，trim 后 PUT 切换会 400。
 - **零运行时依赖**：后端仅用 node: 内置模块；前端依赖（vue/vite 等）均为 devDependency，构建产物自包含。

@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import { useToast } from '@/composables/useToast';
 import { getTestUrl, setTestUrl, PrefsEvent } from '@/utils/prefs';
-import type { ProxiesData, ProxyGroupView, ProxyTestData, ProxyTestResult, ProxySetResult, ModeResult, RuleInfo, SubRuleInfo } from '@/api/types';
+import type { ProxiesData, ProxyGroupView, ProxyTestData, ProxyTestResult, ProxySetResult, ModeResult } from '@/api/types';
 import HelpTip from '@/components/HelpTip.vue';
 
 const toast = useToast();

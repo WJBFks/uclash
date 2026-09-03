@@ -64,6 +64,7 @@ switch_only = os.environ.get('PSWITCH', '') == '1'
 if create_only or switch_only:
     if not name:
         sys.exit('PCREATE/PSWITCH 模式需要 PNAME')
+    found_ref = False
     if create_only:
         if name in providers:
             sys.exit(f'provider 名 {name} 已存在')
@@ -97,19 +98,23 @@ if create_only or switch_only:
                         items.append([idx, len(mm.group(1)), mm.group(2).strip("\'\"")])
                         idx += 1
                     prov_items = [it for it in items if it[2] in providers or it[2] == name]
-                    if prov_items and any(it[2] != name for it in prov_items):
-                        base = prov_items[0][1]
-                        lines[prov_items[0][0]] = ' ' * base + '- ' + name
-                        for it in prov_items[1:]:
-                            if it[2] != name:
-                                lines[it[0]] = None
-                        switched += 1
+                    if prov_items:
+                        found_ref = True
+                        if any(it[2] != name for it in prov_items):
+                            base = prov_items[0][1]
+                            lines[prov_items[0][0]] = ' ' * base + '- ' + name
+                            for it in prov_items[1:]:
+                                if it[2] != name:
+                                    lines[it[0]] = None
+                            switched += 1
                     k = idx
                     continue
             k += 1
         lines = [l for l in lines if l is not None]
-        if switched == 0:
+        if not found_ref:
             sys.exit('未找到可切换的 use: 引用（主配置需有引用订阅源的组，如 PROXY/Auto）')
+        if switched == 0:
+            print(f'[import] use 引用已全部指向 {name}，主配置无需修改')
     out = '\n'.join(lines) + '\n'
     open(path, 'w', encoding='utf-8').write(out)
     print(f'[import] 订阅源 {name} 注入主配置，配置已写入（旧版已备份为 .bak.*）')

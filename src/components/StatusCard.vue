@@ -28,7 +28,7 @@ const timeText = computed(() =>
 const MODE_TEXT = { rule: '规则', global: '全局', direct: '直连' };
 const modeText = computed(() => {
   const m = props.status?.mode;
-  return m ? (MODE_TEXT[m] || m) : '…';
+  return m ? (MODE_TEXT[m as keyof typeof MODE_TEXT] || m) : '…';
 });
 </script>
 

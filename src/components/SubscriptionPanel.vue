@@ -132,10 +132,12 @@ async function delSub(p: SubProviderCard) {
   }
 }
 
-/** 注入主配置（独占激活）：让 PROXY/Auto 等主配置组的 use 引用指向该订阅源 */
+/** 注入主配置（独占激活）：切换选中源 → 重建注入组 + 合并订阅规则；默认配置 → 恢复原始配置快照 */
 async function activate(p: SubProviderCard) {
   if (p.active) return;
-  if (!confirm(`确认将订阅源「${p.name}」注入主配置？\n\n会把主配置组 PROXY/Auto 的 use 引用切到它${p.declared ? '' : '（并补写 config.yaml 声明）'}（自动备份，失败自动回滚），随后热加载并同步订阅组。\n\n当前激活的源将转为待机（声明与缓存保留，随时可再激活）。`)) return;
+  if (p.builtin) {
+    if (!confirm('确认恢复默认配置？\n\n将从主配置移除注入的订阅组与已合并的订阅规则，恢复为原始基础规则（自动备份，失败自动回滚）。\n订阅源与缓存均保留，可随时重新激活。')) return;
+  } else if (!confirm(`确认将订阅源「${p.name}」注入主配置？\n\n会把主配置组 PROXY/Auto 的 use 引用切到它${p.declared ? '' : '（并补写 config.yaml 声明）'}，并把该源定义的代理组与规则合并进主配置（自动备份，失败自动回滚）。\n\n当前激活的源将转为待机（声明与缓存保留，可随时再激活）。`)) return;
   activating.value = p.name;
   try {
     const d = await api<SubActivateData>('/subscriptions/activate', { method: 'POST', body: { name: p.name }, timeout: 120000 });
@@ -237,7 +239,7 @@ onMounted(async () => {
       <div v-if="lastSummary && !refreshing" class="si-msg muted">{{ lastSummary }}</div>
     </div>
 
-    <!-- 订阅源卡片 -->
+    <!-- 订阅源卡片（含内置「默认配置」） -->
     <div v-if="loading" class="card">
       <div class="node-empty">加载中…</div>
     </div>
@@ -245,27 +247,30 @@ onMounted(async () => {
       <div class="node-empty">未配置订阅源</div>
     </div>
     <div v-else class="sub-grid">
-      <div v-for="p in providers" :key="p.name" :class="['card', 'sub-card', { active: p.active }]">
+      <div v-for="p in providers" :key="p.name" :class="['card', 'sub-card', { active: p.active, builtin: p.builtin }]">
         <div class="sc-head">
-          <span class="sc-icon">📄</span>
-          <span class="sc-name" :title="p.name">{{ p.name }}</span>
+          <span class="sc-icon">{{ p.builtin ? '🏠' : '📄' }}</span>
+          <span class="sc-name" :title="p.name">{{ p.builtin ? '默认配置' : p.name }}</span>
+          <span v-if="p.builtin" class="sc-badge muted">内置</span>
           <span v-if="p.active" class="sc-badge on">使用中</span>
-          <span v-else-if="!p.declared" class="sc-badge">未声明</span>
+          <span v-else-if="!p.builtin && !p.declared" class="sc-badge">未声明</span>
           <span class="sc-spacer" />
-          <button
-            class="icon-btn"
-            :disabled="refreshing"
-            title="刷新订阅源（mihomo 无单源刷新端点，将刷新全部订阅）"
-            @click="refreshSubs()"
-          >
-            ⟳
-          </button>
-          <button class="icon-btn" title="复制订阅链接" @click="copyLink(p.url, p.name)">⧉</button>
-          <button class="icon-btn danger" title="删除订阅源" @click="delSub(p)">✕</button>
+          <template v-if="!p.builtin">
+            <button
+              class="icon-btn"
+              :disabled="refreshing"
+              title="刷新订阅源（mihomo 无单源刷新端点，将刷新全部订阅）"
+              @click="refreshSubs()"
+            >
+              ⟳
+            </button>
+            <button class="icon-btn" title="复制订阅链接" @click="copyLink(p.url, p.name)">⧉</button>
+            <button class="icon-btn danger" title="删除订阅源" @click="delSub(p)">✕</button>
+          </template>
         </div>
         <div class="sc-meta">
-          <span class="sc-host" :title="p.url">{{ hostOf(p.url) }}</span>
-          <span class="sc-rel">{{ relTime(p.updated) }}</span>
+          <span class="sc-host" :title="p.url">{{ p.builtin ? '—' : hostOf(p.url) }}</span>
+          <span class="sc-rel">{{ p.builtin ? '—' : relTime(p.updated) }}</span>
         </div>
         <div v-if="usageOf(p)" class="sc-usage">
           <div class="sc-usage-row">
@@ -276,17 +281,22 @@ onMounted(async () => {
             <div class="sc-bar-fill" :class="{ warn: usageOf(p)!.pct > 80 }" :style="{ width: usageOf(p)!.pct + '%' }" />
           </div>
         </div>
-        <div v-else-if="usageLoading.has(p.name)" class="sc-usage">
+        <div v-else-if="!p.builtin && usageLoading.has(p.name)" class="sc-usage">
           <div class="muted">用量加载中…</div>
         </div>
         <div class="sc-foot">
-          <span>{{ p.nodes }} 个节点</span>
-          <span v-if="p.groupCount"> · {{ p.groupCount }} 组</span>
-          <span v-if="p.ruleCount"> · {{ p.ruleCount }} 条规则</span>
-          <span v-if="intervalText(p.interval)" class="muted"> · {{ intervalText(p.interval) }}</span>
+          <template v-if="p.builtin">
+            <span>{{ p.groupCount }} 个组 · {{ p.ruleCount }} 条基础规则</span>
+          </template>
+          <template v-else>
+            <span>{{ p.nodes }} 个节点</span>
+            <span v-if="p.groupCount"> · {{ p.groupCount }} 组</span>
+            <span v-if="p.ruleCount"> · {{ p.ruleCount }} 条规则</span>
+            <span v-if="intervalText(p.interval)" class="muted"> · {{ intervalText(p.interval) }}</span>
+          </template>
         </div>
         <button v-if="!p.active" class="btn inject-btn" :disabled="activating === p.name" @click="activate(p)">
-          {{ activating === p.name ? '激活中…' : '⚡ 注入主配置（设为当前激活源）' }}
+          {{ activating === p.name ? '切换中…' : (p.builtin ? '⚡ 恢复默认配置' : '⚡ 注入主配置（设为当前激活源）') }}
         </button>
       </div>
     </div>
@@ -295,9 +305,10 @@ onMounted(async () => {
     <div class="card">
       <h2>订阅组自动同步</h2>
       <p class="muted">
-        mihomo 的 proxy-providers 只导入订阅里的节点，不导入其代理组。刷新/导入订阅时，本系统会自动把订阅
-        yaml 中定义的 proxy-groups 注入主配置并热加载生效（写前自动备份，热加载失败自动回滚，各组当前选择在
-        加载后恢复）。各组详情见「代理组」页。
+        mihomo 的 proxy-providers 只导入订阅里的节点，不导入其代理组与规则。clash-web 会把
+        <strong>当前选中（激活）</strong>订阅源里定义的 proxy-groups 与 rules 合并注入主配置并热加载生效（写前自动备份，热加载失败自动回滚，各组当前选择在加载后恢复）。
+        只展示/注入当前选中的源；「默认配置」为原始配置快照，可随时恢复用于备份与测试。
+        各组详情见「代理组」页。
       </p>
     </div>
   </div>

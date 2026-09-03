@@ -7,7 +7,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { config, PROXY_ON_CONTENT } from './config.js';
 import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, sleep } from './mihomo.js';
-import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules, activeProviderNames } from './lib/group-sync.js';
+import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules, getSelectedSource, setSelectedSource, ensureBaseBackup, restoreDefaultConfig, readBaseSectionCounts } from './lib/group-sync.js';
 
 const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
@@ -228,13 +228,12 @@ const handlers = {
           .map((x) => ({ type: x.type || '', payload: x.payload || '', proxy: x.proxy }));
       }
     } catch {}
-    // 只展示「当前选中」订阅源（主配置 use: 引用到的源）的未生效组与规则；无选中源时回退为全部源
-    const activeNames = activeProviderNames();
-    const activeFilter = activeNames.length ? activeNames : null;
+    // 组页面只展示「当前选中」订阅源（订阅页选中的源）的未生效组与规则；选中默认配置时为空
+    const activeFilter = (sel => sel === 'default' ? [] : [sel])(getSelectedSource());
     // 订阅源定义、但 mihomo 未激活的组（provider 只导入节点不导入组）
     const seen = new Set(groups.map((g) => g.name));
     const orphanGroups = readProviderGroups(activeFilter).filter((g) => !seen.has(g.name));
-    // 订阅源 yaml 里定义的规则（未合并进主配置，前端展示“定义但未生效”）
+    // 选中源 yaml 里定义、未合并进主配置的规则（已合并的会同时出现在 rules 里，前端优先显示生效态）
     let subRules = [];
     try {
       subRules = readProviderRules(activeFilter);
@@ -311,6 +310,7 @@ const handlers = {
   // 订阅源卡片列表：显示所有订阅（config.yaml 声明 ∪ providers/ 缓存文件，含未声明的）。
   // mihomo /providers/proxies 只补充运行时节点数（v1.19 会把注入组混入该接口，不可信）。
   async 'GET /api/subscriptions'() {
+    const selected = getSelectedSource();
     const cfgProvs = readConfigProviders();
     const cfgMap = new Map(cfgProvs.map((p) => [p.name, p]));
     let files = [];
@@ -363,16 +363,32 @@ const handlers = {
         groupCount,
         ruleCount,
         declared: Boolean(cp),
-        active: findProviderRefs(name).length > 0,
+        active: selected === name,
         userinfo: hit && Date.now() - hit.at < USERINFO_TTL ? hit.info : null,
       };
     });
-    return { ok: true, subscriptions: providers.map((p) => p.name), providers };
+    // 内置「默认配置」卡片：不可删除；选中 = 主配置处于原始状态（无注入的订阅组/规则），兼作备份与测试
+    const base = readBaseSectionCounts();
+    const defaultCard = {
+      name: 'default',
+      builtin: true,
+      url: '',
+      interval: 0,
+      nodes: 0,
+      updated: 0,
+      groupCount: base.groups,
+      ruleCount: base.rules,
+      declared: true,
+      active: selected === 'default',
+      userinfo: null,
+    };
+    return { ok: true, subscriptions: ['default', ...providers.map((p) => p.name)], providers: [defaultCard, ...providers] };
   },
 
   // 订阅用量/到期：拉取订阅 URL 读 subscription-userinfo 响应头（经 mihomo 出口），10 分钟缓存
   async 'GET /api/subscriptions/userinfo'({ name }) {
     name = String(name || '').trim();
+    if (name === 'default') return { ok: true, name, userinfo: null }; // 默认配置无订阅用量
     const cp = readConfigProviders().find((x) => x.name === name);
     if (!cp || !cp.url) return { ok: false, error: `未找到订阅源「${name || '?'}」或其 URL` };
     const info = await fetchUserinfo(name, cp.url);
@@ -384,13 +400,20 @@ const handlers = {
   async 'POST /api/subscriptions/activate'({ name }) {
     name = String(name || '').trim();
     if (!name) return { ok: false, error: '请提供要激活的订阅源名称' };
-    if (name === 'default') return { ok: false, error: '内置默认源不可激活' };
+    if (name === 'default') {
+      // 恢复默认配置：回到原始规则/组快照（兼作备份与测试）
+      const r = await restoreDefaultConfig();
+      if (!r.ok) return { ok: false, error: r.error, rolledBack: r.rolledBack };
+      return { ok: true, message: r.changed
+        ? '已恢复默认配置（原始规则与组，已移除注入的订阅组/规则；订阅源与缓存均保留，可随时重新激活）'
+        : '当前已是默认配置' };
+    }
     const cp = readConfigProviders().find((x) => x.name === name);
     const filePath = cp && cp.path
       ? path.resolve(path.dirname(mihomoCfg), cp.path)
       : path.join(PROVIDERS_DIR, `${name}.yaml`);
     if (!fs.existsSync(filePath)) return { ok: false, error: `订阅源「${name}」没有本地缓存文件，无法激活` };
-    if (findProviderRefs(name).length) return { ok: false, error: `订阅源「${name}」已是当前激活源` };
+    if (getSelectedSource() === name) return { ok: false, error: `订阅源「${name}」已是当前激活源` };
     let url = cp && cp.url ? cp.url : '';
     if (!url) {
       try {
@@ -402,6 +425,7 @@ const handlers = {
     const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '');
     const bak = `${mihomoCfg}.bak.${ts}`;
     fs.copyFileSync(mihomoCfg, bak);
+    ensureBaseBackup(); // 首次激活前保存原始配置快照（默认配置的备份/恢复点）
     const p = await run('python3', [importScript], 30000, {
       CFG: mihomoCfg, URL: url, PNAME: name, PCREATE: cp ? '0' : '1', PSWITCH: '1',
     });
@@ -409,19 +433,19 @@ const handlers = {
       try { fs.copyFileSync(bak, mihomoCfg); } catch {}
       return { ok: false, error: '激活失败，已回滚到备份\n' + (p.stderr || p.stdout), rolledBack: true };
     }
+    // 统一由 sync 重建注入块（组 + 规则合并）并热加载（被 mihomo 拒则自动回滚）
     let tail = '';
     try {
-      const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
-      if (!rr.ok) tail = '；热加载失败：' + (rr.error ? '服务未运行？' : `HTTP ${rr.status}`);
+      const gs = await syncSubscriptionGroups(name);
+      if (gs.ok === false) tail += `；订阅组/规则同步失败：${gs.error}`;
+      else if (gs.changed) tail += `；已重建 ${gs.injected} 个订阅组，合并 ${gs.rules} 条订阅规则`;
       else {
-        await sleep(6000); // 等 mihomo 读取新 provider 缓存
-        try {
-          const gs = await syncSubscriptionGroups();
-          if (gs.ok === false) tail += `；订阅组同步失败：${gs.error}`;
-          else if (gs.changed) tail += `；已重建 ${gs.injected} 个订阅组`;
-        } catch (e) { tail += `；订阅组同步异常：${e.message || e}`; }
+        // 注入块无变化，但 use: 引用可能已切换 → 仍需重载让 mihomo 生效
+        const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
+        if (!rr.ok) tail += '；注：热加载未成功' + (rr.error ? '（服务未运行？）' : `（HTTP ${rr.status}）`) + '，将在下次重载时生效';
+        else { await sleep(2000); tail += '；已热加载'; }
       }
-    } catch (e) { tail = '；热加载异常：' + (e.message || e); }
+    } catch (e) { tail = '；订阅组/规则同步异常：' + (e.message || e); }
     return { ok: true, message: `已激活订阅源「${name}」（PROXY/Auto 等主配置组已指向它）${tail}` };
   },
 
@@ -429,7 +453,7 @@ const handlers = {
   async 'POST /api/subscriptions/delete'({ name }) {
     name = String(name || '').trim();
     if (!name) return { ok: false, error: '请提供要删除的订阅源名称' };
-    if (name === 'default') return { ok: false, error: '内置默认源不可删除' };
+    if (name === 'default') return { ok: false, error: '默认配置是内置备份（原始规则/组快照），不能删除' };
     const cfgProvs = readConfigProviders();
     const cp = cfgProvs.find((x) => x.name === name);
     const filePath = cp && cp.path
@@ -453,6 +477,7 @@ const handlers = {
       // 若先热加载，注入块仍引用被删源 → mihomo 400 且文件遗留悬空引用
       try { fs.rmSync(filePath, { force: true }); } catch {}
       userinfoCache.delete(name);
+      if (getSelectedSource() === name) setSelectedSource('default'); // 被删源恰为选中源 → 回到默认配置态
       let tail = '';
       try {
         const gs = await syncSubscriptionGroups();
@@ -516,7 +541,7 @@ const handlers = {
     }
     let summary = `完成: ${okCount}/${names.length} 个订阅源已更新`;
     if (groups.ok === false) summary += `；订阅组同步失败: ${groups.error}`;
-    else if (groups.changed) summary += `；已激活 ${groups.injected} 个订阅组`;
+    else if (groups.changed) summary += `；已激活 ${groups.injected} 个订阅组` + (groups.rules ? `，合并 ${groups.rules} 条订阅规则` : '');
     else summary += '；订阅组无变化';
     return { ok: true, results, summary, groups };
   },
@@ -557,7 +582,7 @@ const handlers = {
         try {
           const gs = await syncSubscriptionGroups();
           if (gs.ok === false) message += `，但订阅组同步失败：${gs.error}`;
-          else if (gs.changed) message += `，已激活 ${gs.injected} 个订阅组`;
+          else if (gs.changed) message += `，已激活 ${gs.injected} 个订阅组` + (gs.rules ? `，合并 ${gs.rules} 条订阅规则` : '');
         } catch (e) {
           message += `，但订阅组同步异常：${e.message || e}`;
         }

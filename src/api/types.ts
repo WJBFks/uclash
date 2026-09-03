@@ -118,6 +118,8 @@ export interface SubUserinfo {
 
 export interface SubProviderCard {
   name: string;
+  /** 内置「默认配置」卡片，不可删除 */
+  builtin?: boolean;
   url: string;
   interval: number;
   nodes: number;
@@ -159,6 +161,8 @@ export interface SubRefreshItem {
 export interface GroupSyncData {
   ok: boolean;
   injected?: number;
+  /** 合并进主配置的订阅规则条数 */
+  rules?: number;
   changed?: boolean;
   reloaded?: boolean;
   restored?: number;
