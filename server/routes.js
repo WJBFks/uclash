@@ -251,7 +251,36 @@ const handlers = {
     try {
       subRules = readProviderRules(activeFilter);
     } catch {}
-    return { ok: true, mode, groups, meta, orphanGroups, rules, subRules, proxyNow, globalNow };
+    // 全局模式「全局代理」扁平页数据
+    // 1) 选中源的全部物理节点（按 provider 文件顺序），默认配置则回退到基础组引用的节点
+    let flatNodes = [];
+    if (sel !== 'default') {
+      try {
+        const cp = readConfigProviders().find((x) => x.name === sel);
+        const file = cp && cp.path
+          ? path.resolve(path.dirname(mihomoCfg), cp.path)
+          : path.join(path.dirname(mihomoCfg), 'providers', sel + '.yaml');
+        flatNodes = [...parseProviderFile(fs.readFileSync(file, 'utf8')).nodes];
+      } catch {}
+    }
+    if (!flatNodes.length) {
+      const nodeSeen = new Set(groups.map((g) => g.name));
+      for (const g of groups) for (const n of g.all) {
+        if (!nodeSeen.has(n) && !flatNodes.includes(n)) flatNodes.push(n);
+      }
+    }
+    // 2) GLOBAL 当前出口链路：GLOBAL → 组… → 叶子节点/直连，用于高亮当前出口
+    const flatChain = ['GLOBAL'];
+    {
+      let cur = (prox['GLOBAL'] && prox['GLOBAL'].now) || '';
+      let guard = 0;
+      while (cur && guard++ < 10 && prox[cur] && GROUP_TYPES.has(prox[cur].type)) {
+        flatChain.push(cur);
+        cur = prox[cur].now || '';
+      }
+      if (cur) flatChain.push(cur);
+    }
+    return { ok: true, mode, groups, meta, orphanGroups, rules, subRules, proxyNow, globalNow, flatNodes, flatChain };
   },
 
   // 切换节点（= clash set）；group 默认 PROXY，全局模式下前端传 GLOBAL

@@ -57,6 +57,10 @@ export interface ProxiesData {
   subRules?: SubRuleInfo[];
   proxyNow?: string;
   globalNow?: string;
+  /** 全局模式扁平页：选中源的全部物理节点（provider 文件顺序） */
+  flatNodes?: string[];
+  /** 全局模式扁平页：GLOBAL 当前出口链路，如 [GLOBAL, PROXY, 新加坡 1] */
+  flatChain?: string[];
 }
 
 export interface ProxySetResult {

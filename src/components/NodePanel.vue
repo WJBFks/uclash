@@ -293,6 +293,64 @@ function latClass(r: ProxyTestResult): string {
   return 'slow';
 }
 
+// ---- 全局模式：扁平「全局代理」页（全部节点 + 全部组平铺，参考 Clash Verge）----
+const flatSpecials = [
+  { name: 'DIRECT', label: '直连', tip: '全局直连：所有流量不走代理' },
+  { name: 'REJECT', label: '拒绝', tip: '丢弃所有流量' },
+];
+const flatChain = computed<string[]>(() => data.value?.flatChain ?? []);
+// 全局出口链路末端（实际生效的节点/直连/拒绝）
+const flatEnd = computed(() => {
+  const c = flatChain.value;
+  return c.length ? c[c.length - 1] : '';
+});
+// GLOBAL 直接指向的组（链路第二环），用于高亮组卡片
+const flatGroup = computed(() => {
+  const g = flatChain.value[1] ?? '';
+  return groupNames.value.has(g) ? g : '';
+});
+const flatNodes = computed<string[]>(() => data.value?.flatNodes ?? []);
+const flatVisibleNodes = computed(() => {
+  const q = filter.value.trim().toLowerCase();
+  return flatNodes.value.filter((n) => !q || n.toLowerCase().includes(q));
+});
+const flatVisibleGroups = computed(() => {
+  const q = filter.value.trim().toLowerCase();
+  return groups.value.filter((g) => !q || g.name.toLowerCase().includes(q));
+});
+
+function setGlobal(target: string) {
+  setNode(target, 'GLOBAL');
+}
+// 点物理节点：找包含它的组（优先 GLOBAL 当前指向的组），切组内选择 + 必要时 GLOBAL 跟随
+async function setGlobalNode(node: string) {
+  const host =
+    groups.value.find((g) => g.name === flatGroup.value && g.all.includes(node)) ??
+    groups.value.find((g) => g.all.includes(node));
+  if (!host) {
+    toast('该节点不属于当前显示的任何代理组，无法设为全局出口', true);
+    return;
+  }
+  try {
+    const d1 = await api<ProxySetResult>('/proxy-set', { method: 'POST', body: { name: node, group: host.name } });
+    if (d1.ok === false) {
+      toast(d1.message || `切换 ${host.name} 失败`, true);
+      return;
+    }
+    if (flatGroup.value && flatGroup.value !== host.name) {
+      const d2 = await api<ProxySetResult>('/proxy-set', { method: 'POST', body: { name: host.name, group: 'GLOBAL' } });
+      if (d2.ok === false) {
+        toast(d2.message || `GLOBAL 切换到 ${host.name} 失败`, true);
+        return;
+      }
+    }
+    toast(`全局出口：${host.name} → ${node}`);
+    loadNodes(true);
+  } catch (e) {
+    toast(`切换失败: ${e instanceof Error ? e.message : e}`, true);
+  }
+}
+
 // ---- 测速（mihomo 原生 healthcheck，只测物理节点，组/特殊项不可测）----
 function testableIn(g: ProxyGroupView): string[] {
   return g.all.filter(isNode);
@@ -359,10 +417,10 @@ onUnmounted(() => {
     <div class="card">
       <div class="np-header">
         <div class="np-title">
-          <h2>代理组</h2>
+          <h2>{{ isGlobalMode ? '全局代理' : '代理组' }}</h2>
           <HelpTip :text="overviewDesc()" />
-          <span class="count">{{ groups.length }}</span>
-          <span v-if="totalMembers" class="np-total">{{ totalMembers }} 个成员</span>
+          <span class="count">{{ isGlobalMode ? flatSpecials.length + flatVisibleNodes.length + flatVisibleGroups.length : groups.length }}</span>
+          <span v-if="!isGlobalMode && totalMembers" class="np-total">{{ totalMembers }} 个成员</span>
         </div>
         <div class="mode-switch-wrap">
           <div class="mode-switch" role="group" aria-label="代理模式">
@@ -407,9 +465,84 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 各代理组卡片 -->
     <div v-if="loadError" class="card"><div class="node-empty">{{ loadError }}</div></div>
     <template v-else>
+      <!-- 全局模式：扁平「全局代理」页 —— 特殊项 + 全部节点 + 全部组 平铺（参考 Clash Verge） -->
+      <div v-if="isGlobalMode" class="card">
+        <div v-if="!flatVisibleNodes.length && !flatVisibleGroups.length" class="node-empty">无匹配节点</div>
+        <div v-else class="node-grid">
+          <div
+            v-for="s in flatSpecials"
+            :key="'sp:' + s.name"
+            class="node-card"
+            :class="{ current: flatEnd === s.name }"
+            :title="s.tip"
+            @click="setGlobal(s.name)"
+          >
+            <div class="nc-top">
+              <span class="nc-name">{{ s.name }}</span>
+              <span v-if="flatEnd === s.name" class="nc-check">✓</span>
+            </div>
+            <div class="nc-badges"><span class="badge">{{ s.label }}</span></div>
+          </div>
+
+          <div
+            v-for="n in flatVisibleNodes"
+            :key="'n:' + n"
+            class="node-card"
+            :class="{ current: flatEnd === n }"
+            :title="`${n}（点击 = 全局流量经其所在组走该节点）`"
+            @click="setGlobalNode(n)"
+          >
+            <div class="nc-top">
+              <span class="nc-name">{{ n }}</span>
+              <span class="nc-right">
+                <span
+                  v-if="testResults[n]"
+                  :class="['nc-lat', latClass(testResults[n])]"
+                  :title="testResults[n].ok ? '' : (testResults[n].error || '')"
+                >{{ testResults[n].ok ? testResults[n].latency : 'Error' }}</span>
+                <span v-if="flatEnd === n" class="nc-check">✓</span>
+              </span>
+            </div>
+            <div class="nc-badges">
+              <span v-if="data?.meta?.[n]?.type" class="badge">{{ data.meta[n].type }}</span>
+              <span v-if="data?.meta?.[n]?.udp" class="badge">UDP</span>
+            </div>
+          </div>
+
+          <div
+            v-for="g in flatVisibleGroups"
+            :key="'g:' + g.name"
+            class="node-card"
+            :class="{ current: flatGroup === g.name }"
+            :title="`点击 = 全局出口切换到 ${g.name}`"
+            @click="setGlobal(g.name)"
+          >
+            <div class="nc-top">
+              <span class="nc-name">{{ g.name }}</span>
+              <span class="nc-right">
+                <span
+                  v-if="testResults[g.now]"
+                  :class="['nc-lat', latClass(testResults[g.now])]"
+                  :title="`当前选择：${g.now} · ${testResults[g.now].ok ? '' : (testResults[g.now].error || '')}`"
+                >{{ testResults[g.now].ok ? testResults[g.now].latency : 'Error' }}</span>
+                <span v-if="g.now" class="nc-now" :title="`当前选择：${g.now}`">{{ g.now }}</span>
+                <span v-if="flatGroup === g.name" class="nc-check">✓</span>
+              </span>
+            </div>
+            <div class="nc-badges">
+              <span class="badge grp">{{ TYPE_LABEL[g.type] || g.type }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="hint">
+          全局模式下所有流量经 GLOBAL 出口：点节点 = 全局流量经其所在组走该节点；点组 = 全局出口切到该组；DIRECT = 全直连，REJECT = 丢弃流量
+        </div>
+      </div>
+
+      <!-- 规则/直连模式：按代理组卡片展示 -->
+      <template v-else>
       <div v-for="g in visibleGroups" :key="g.name" class="card group-card">
         <div class="group-head">
           <div class="gh-left">
@@ -490,8 +623,9 @@ onUnmounted(() => {
       </div>
 
       <div v-if="!visibleGroups.length && groups.length" class="card">
-        <div class="node-empty">{{ !isGlobalMode && !selectedGroups.size ? '未勾选任何组 —— 请在上方「显示组」勾选要显示的代理组' : '无匹配节点' }}</div>
+        <div class="node-empty">{{ !selectedGroups.size ? '未勾选任何组 —— 请在上方「显示组」勾选要显示的代理组' : '无匹配节点' }}</div>
       </div>
+      </template>
       <div v-if="!groups.length && !data" class="card">
         <div class="node-empty">加载节点中…</div>
       </div>
@@ -513,7 +647,10 @@ onUnmounted(() => {
     </div>
 
     <div v-if="testStatus" class="hint testing"><span class="dot warn"></span>{{ testStatus }}</div>
-    <div class="hint">
+    <div v-if="isGlobalMode" class="hint">
+      全局模式：所有流量经 GLOBAL 出口。点节点 = 经其所在组走该节点；点组 / DIRECT / REJECT = 切换全局出口。列表每 3 秒自动刷新
+    </div>
+    <div v-else class="hint">
       点击成员卡片 = 切换该组的选择（<code>clash set</code>）；列表每 3 秒自动刷新；标题旁的「?」悬停查看该组作用与流量路径；测速走 mihomo 原生 healthcheck、并发、单项 10s 超时，不影响当前出口
     </div>
   </div>
