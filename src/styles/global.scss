@@ -296,38 +296,6 @@ code {
   margin: 0 auto;
 }
 
-.np-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-
-  .np-title {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    flex-wrap: wrap;
-
-    h2 {
-      font-size: 18px;
-      font-weight: 700;
-      color: $text;
-      text-transform: none;
-      letter-spacing: 0;
-      margin: 0;
-    }
-
-    .np-now {
-      font-size: 13px;
-      color: $muted;
-
-      b { color: $text; }
-    }
-  }
-}
-
 .mode-switch {
   display: flex;
   gap: 4px;
@@ -367,11 +335,6 @@ code {
 
 .np-toolbar {
   margin-bottom: 12px;
-
-  .np-search {
-    flex: 1;
-    min-width: 160px;
-  }
 
   .np-url {
     flex: 1.6;
@@ -819,13 +782,6 @@ table {
   }
 
   &:hover .ht-tip, &:focus .ht-tip { display: block; }
-}
-
-// 模式切换 + 帮助问号
-.mode-switch-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
 // 组内路由规则展示
