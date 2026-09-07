@@ -43,6 +43,53 @@ const unq = (s) => {
   return t;
 };
 
+/** 解析流式映射 `{ k: v, k2: v2 }`（单行）→ [[key, 原始value], …]（值保留原引号）。
+ *  用于 云边(claudeborder) 类订阅：整行写成 `- { name: ..., type: ..., proxies: [...] }`。 */
+function parseFlowPairs(rest) {
+  let s = rest.trim();
+  if (s.startsWith('{')) s = s.slice(1);
+  if (s.endsWith('}')) s = s.slice(0, -1);
+  const parts = [];
+  let depth = 0, cur = '', inQ = null;
+  for (const ch of s) {
+    if (inQ) { cur += ch; if (ch === inQ) inQ = null; continue; }
+    if (ch === "'" || ch === '"') { inQ = ch; cur += ch; continue; }
+    if (ch === '[' || ch === '{') depth++;
+    else if (ch === ']' || ch === '}') depth--;
+    if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur);
+  const out = [];
+  for (const p of parts) {
+    const ci = p.indexOf(':');
+    if (ci <= 0) continue;
+    const k = p.slice(0, ci).trim();
+    const v = p.slice(ci + 1).trim();
+    if (k) out.push([k, v]);
+  }
+  return out;
+}
+
+/** 拆分流式列表 `[a, b, 'c d']` → 元素数组（去引号、去空项）。 */
+function parseFlowList(s) {
+  let inner = s.trim();
+  if (inner.startsWith('[')) inner = inner.slice(1);
+  if (inner.endsWith(']')) inner = inner.slice(0, -1);
+  const out = [];
+  let cur = '', inQ = null, depth = 0;
+  for (const ch of inner) {
+    if (inQ) { cur += ch; if (ch === inQ) inQ = null; continue; }
+    if (ch === "'" || ch === '"') { inQ = ch; cur += ch; continue; }
+    if (ch === '[' || ch === '{') depth++;
+    else if (ch === ']' || ch === '}') depth--;
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur);
+  return out.map((x) => unq(x.trim())).filter(Boolean);
+}
+
 /** yaml 标量：简单名原样，含空格/特殊字符用单引号包裹（' 转义为 ''） */
 function yamlScalar(s) {
   if (/^[A-Za-z0-9_][A-Za-z0-9_\-./ ]*$/.test(s) && !/^[\s'":#]/.test(s)) return s;
@@ -83,9 +130,15 @@ export function parseProviderFile(text) {
     if (section === 'proxies') {
       if (isDash) {
         const rest = t === '-' ? '' : t.slice(2).trim();
+        let nm = '';
         const m = rest.match(/^name:\s*(.+)$/);
-        nodeItem = { name: m ? unq(m[1]) : '' };
-        if (nodeItem.name) nodes.add(nodeItem.name);
+        if (m) nm = unq(m[1]);
+        else if (rest.startsWith('{')) {
+          // 流式节点：- { name: X, type: ..., server: ... }
+          for (const [k, v] of parseFlowPairs(rest)) if (k === 'name') { nm = unq(v); break; }
+        }
+        nodeItem = { name: nm };
+        if (nm) nodes.add(nm);
         continue;
       }
       const m = t.match(/^name:\s*(.+)$/);
@@ -107,7 +160,15 @@ export function parseProviderFile(text) {
         inMembers = false;
         const rest = t === '-' ? '' : t.slice(2).trim();
         let m;
-        if ((m = rest.match(/^name:\s*(.+)$/))) cur.name = unq(m[1]);
+        if (rest.startsWith('{')) {
+          // 流式组：- { name: X, type: select, proxies: [...], url: '...', interval: 1800 }
+          for (const [k, v] of parseFlowPairs(rest)) {
+            if (k === 'name') cur.name = unq(v);
+            else if (k === 'type') cur.type = v;
+            else if (k === 'proxies') for (const mem of parseFlowList(v)) cur.members.push(mem);
+            else cur.options.push(`    ${k}: ${v}`);
+          }
+        } else if ((m = rest.match(/^name:\s*(.+)$/))) cur.name = unq(m[1]);
         else if ((m = rest.match(/^type:\s*(\w+)\s*$/))) cur.type = m[1];
         else if (/^proxies:\s*$/.test(rest)) inMembers = true;
         else if (rest) cur.options.push(line);
@@ -410,7 +471,12 @@ export function extractRuleLines(text) {
     }
     if (/^\S/.test(raw)) break; // 顶层新键 = 段结束
     const t = raw.trim();
-    if (t === '-' || t.startsWith('- ')) out.push(t.replace(/^\s*-\s*/, '').trim());
+    if (t === '-' || t.startsWith('- ')) {
+      let v = t.replace(/^\s*-\s*/, '').trim();
+      const q = v[0];
+      if (v.length >= 2 && (q === "'" || q === '"') && v.endsWith(q)) v = v.slice(1, -1);
+      out.push(v);
+    }
   }
   return out;
 }

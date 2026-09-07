@@ -13,44 +13,16 @@ const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
 
 /**
- * 解析 provider 缓存文件里的 proxy-groups（轻量行解析，与 import-sub.py 风格一致；零依赖不用 yaml 库）。
+ * 解析 provider 缓存文件里的 proxy-groups（复用 group-sync.js 的 parseProviderFile：
+ * 同时支持块状与流式（`- { name: ..., proxies: [...] }`）两种 YAML 写法；零依赖不用 yaml 库）。
  * 订阅源 yaml 里定义的组 mihomo 不会激活（provider 只导入节点），这里提取出来供前端展示。
  */
 function parseYamlGroups(text) {
-  const groups = [];
-  let inPG = false, cur = null, inMembers = false, itemIndent = -1;
-  const unq = (s) => s.trim().replace(/^["']|["']$/g, '');
-  for (const line of text.split(/\r?\n/)) {
-    if (!inPG) {
-      if (/^proxy-groups:\s*$/.test(line)) inPG = true;
-      continue;
-    }
-    if (/^\S/.test(line)) break; // 顶层新键 = proxy-groups 段结束
-    const indent = line.length - line.trimStart().length;
-    const t = line.trim();
-    const isDash = t === '-' || t.startsWith('- ');
-    if (isDash && (itemIndent === -1 || indent === itemIndent)) {
-      if (itemIndent === -1) itemIndent = indent;
-      // 新组条目
-      cur = { name: '', type: '', members: [] };
-      groups.push(cur);
-      inMembers = false;
-      const rest = t.slice(1).trim();
-      let m;
-      if ((m = rest.match(/^name:\s*(.+)$/))) cur.name = unq(m[1]);
-      else if ((m = rest.match(/^type:\s*(\w+)/))) cur.type = m[1];
-      else if (/^proxies:\s*$/.test(rest)) inMembers = true;
-      continue;
-    }
-    if (!cur) continue;
-    let m;
-    if ((m = t.match(/^name:\s*(.+)$/))) { cur.name = unq(m[1]); inMembers = false; }
-    else if ((m = t.match(/^type:\s*(\w+)\s*$/))) { cur.type = m[1]; inMembers = false; }
-    else if (/^proxies:\s*$/.test(t)) inMembers = true;
-    else if (isDash && inMembers) cur.members.push(unq(t.slice(2)));
-    else if (/^[\w-]+:/.test(t)) inMembers = false; // url/interval 等其他属性行
+  try {
+    return parseProviderFile(text).groups.map((g) => ({ name: g.name, type: g.type, members: g.members }));
+  } catch {
+    return [];
   }
-  return groups.filter((g) => g.name);
 }
 
 // mtime 缓存，避免 3s 轮询反复读文件
