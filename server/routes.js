@@ -544,10 +544,17 @@ const handlers = {
       try { fs.rmSync(cacheBak, { force: true }); } catch {}
       return { ok: true, message: `已删除订阅源「${name}」${tail}` };
     }
-    // 未声明的源（仅本地缓存）：直接删缓存文件
+    // 未声明的源（仅本地缓存）：删缓存文件 + 热加载让 mihomo 内存与文件一致。
+    // 若 mihomo 内存仍持有该源（声明曾被非热加载方式移除），不重载会让它按 interval 重新拉取、重建缓存文件（「删了又出现」的根因之一）。
     try { fs.rmSync(filePath, { force: true }); } catch (e) { return { ok: false, error: '删除缓存文件失败：' + (e.message || e) }; }
     userinfoCache.delete(name);
-    return { ok: true, message: `已删除订阅源「${name}」（仅本地缓存，未在 config.yaml 声明）` };
+    let tail = '';
+    try {
+      const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
+      if (rr.ok) await sleep(1500);
+      else tail = '；注：mihomo 热加载未成功' + (rr.error ? `（${rr.error}，服务未运行？）` : `（HTTP ${rr.status}）`) + '，若其内存仍持有该源，缓存文件可能在下次更新时重建';
+    } catch (e) { tail = '；注：mihomo 热加载异常：' + (e.message || e); }
+    return { ok: true, message: `已删除订阅源「${name}」（仅本地缓存，未在 config.yaml 声明）${tail}` };
   },
 
   // 刷新全部订阅（= clash update）：热加载 + 比对 providers 缓存文件变化来判定是否真的拉到
@@ -607,6 +614,7 @@ const handlers = {
     let reloaded = null;
     let subUpdated = null;
     let reloadError = null;
+    let message = info; // 提前声明：热加载成功分支中会在 message 上追加同步结果（旧代码在此后声明，触发 TDZ 报错）
     if (reload) {
       const before = snapshotProviders();
       const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
@@ -630,7 +638,6 @@ const handlers = {
         }
       }
     }
-    let message = info;
     if (reloaded === null) message += '（未热加载）';
     else if (!reloaded) message += '，但热加载失败：' + reloadError;
     else if (subUpdated) message += '，已热加载生效，订阅已更新';

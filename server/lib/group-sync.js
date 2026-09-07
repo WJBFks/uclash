@@ -152,7 +152,7 @@ export function configProviderNames() {
     if (/^proxy-providers:\s*$/.test(line)) { inPP = true; continue; }
     if (inPP && /^\S/.test(line)) break;
     if (inPP) {
-      const m = line.match(/^\s{2}([\w-]+):\s*$/);
+      const m = line.match(/^\s{2}([^\s:][^:]*?)\s*:\s*$/);
       if (m) set.add(m[1]);
     }
   }
@@ -174,7 +174,7 @@ export function readConfigProviders() {
     if (/^proxy-providers:\s*$/.test(line)) { inPP = true; continue; }
     if (inPP && /^\S/.test(line)) break;
     if (!inPP) continue;
-    const nm = line.match(/^\s{2}([\w-]+):\s*(?:#.*)?$/);
+    const nm = line.match(/^\s{2}([^\s:][^:]*?)\s*:(?:#.*)?$/);
     if (nm) {
       cur = { name: nm[1], url: '', path: '', interval: 0 };
       out.push(cur);
@@ -306,7 +306,7 @@ export function getSelectedSource() {
       if (!inBlock) continue;
       if (/^use:\s*$/.test(t)) { inUse = true; continue; }
       if (inUse) {
-        const m = t.match(/^-\s*([\w-]+)\s*$/);
+        const m = t.match(/^-\s*([^\s'"]+)\s*$/);
         if (m && m[1] !== 'default') return m[1];
         inUse = false;
       }
@@ -348,7 +348,7 @@ function collectFromProviders(activeNames = null) {
     if (/^proxy-providers:\s*$/.test(line)) { inPP = true; continue; }
     if (inPP && /^\S/.test(line)) break;
     if (!inPP) continue;
-    const nameM = line.match(/^\s{2}([\w-]+):\s*$/);
+    const nameM = line.match(/^\s{2}([^\s:][^:]*?)\s*:\s*$/);
     const pathM = line.match(/^\s*path:\s*(.+)$/);
     if (pathM) {
       const base = unq(pathM[1]).replace(/^\.?\//, '').split('/').pop().replace(/\.ya?ml$/, '');
