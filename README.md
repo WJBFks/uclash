@@ -6,6 +6,12 @@
 
 ## 安装与启动
 
+### 前置要求
+
+请先安装并配置 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，确保 mihomo API 与 user systemd 服务可以正常使用。UClash 默认连接 `http://127.0.0.1:9090`，服务名默认为 `mihomo`。
+
+### 快速启动
+
 ```bash
 # 克隆后安装依赖，并把 uclash 链接到当前 Node 环境
 npm install
@@ -20,6 +26,14 @@ uclash start
 uclash start --port 18080
 uclash stop
 uclash restart
+```
+
+完成一次 `npm link` 后，可以在任意目录运行 `uclash` 启动本仓库中的 UClash。`uclash` 和 `uclash start` 默认在服务就绪后打开浏览器；服务器或无桌面环境可增加 `--no-open`：
+
+```bash
+uclash --no-open
+uclash --port 18080 --no-open
+uclash start --no-open
 ```
 
 `uclash start` 会安装并管理当前用户的 `uclash.service`。`restart` 沿用最近一次 `start` 指定的端口。生产命令只启动仓库内的 `dist/`；如果构建文件不存在，CLI 会提示先运行 `npm run build`。仓库保留 `dist/`，正常 clone 后无需自行构建。

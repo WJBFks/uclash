@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +23,7 @@ export function parseCliArgs(args) {
   if (['stop', 'restart'].includes(command)) return { command, port: null };
 
   let port = DEFAULT_PORT;
+  let open = true;
   while (values.length) {
     const arg = values.shift();
     if (arg === '--port') {
@@ -29,11 +31,52 @@ export function parseCliArgs(args) {
       port = portNumber(values.shift());
     } else if (arg.startsWith('--port=')) {
       port = portNumber(arg.slice('--port='.length));
+    } else if (arg === '--no-open') {
+      open = false;
     } else {
       throw new Error(`未知参数：${arg}`);
     }
   }
-  return { command, port };
+  return { command, port, open };
+}
+
+export function browserCommand(platform, url) {
+  if (platform === 'linux') return ['/usr/bin/xdg-open', [url]];
+  if (platform === 'darwin') return ['/usr/bin/open', [url]];
+  return null;
+}
+
+function waitForServer(port, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const attempt = () => {
+      const socket = net.createConnection({ host: '127.0.0.1', port });
+      let finished = false;
+      const finish = (ready) => {
+        if (finished) return;
+        finished = true;
+        socket.destroy();
+        if (ready || Date.now() >= deadline) resolve(ready);
+        else setTimeout(attempt, 100);
+      };
+      socket.once('connect', () => finish(true));
+      socket.once('error', () => finish(false));
+      socket.setTimeout(500, () => finish(false));
+    };
+    attempt();
+  });
+}
+
+function openBrowser(port) {
+  const url = `http://127.0.0.1:${port}`;
+  const command = browserCommand(process.platform, url);
+  if (!command || !fs.existsSync(command[0])) {
+    console.warn(`无法自动打开浏览器，请手动访问 ${url}`);
+    return;
+  }
+  const child = spawn(command[0], command[1], { detached: true, stdio: 'ignore' });
+  child.once('error', () => console.warn(`无法自动打开浏览器，请手动访问 ${url}`));
+  child.unref();
 }
 
 function quoteUnit(value) {
@@ -82,28 +125,37 @@ async function installService(port) {
   await systemctl(['daemon-reload']);
 }
 
-async function runForeground(port) {
+async function runForeground(port, shouldOpen) {
   ensureDist();
   const child = spawn(process.execPath, [path.join(ROOT_DIR, 'server/index.js')], {
     cwd: ROOT_DIR,
     env: { ...process.env, PORT: String(port), CW_DEV: '' },
     stdio: 'inherit',
   });
-  return new Promise((resolve, reject) => {
+  const exited = new Promise((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (code, signal) => resolve(signal ? 128 : (code ?? 1)));
   });
+  const ready = await Promise.race([
+    waitForServer(port),
+    exited.then(() => false),
+  ]);
+  if (ready && shouldOpen) openBrowser(port);
+  return exited;
 }
 
 export async function main(args = process.argv.slice(2)) {
   try {
     const options = parseCliArgs(args);
-    if (options.command === 'run') return await runForeground(options.port);
+    if (options.command === 'run') return await runForeground(options.port, options.open);
     if (options.command === 'start') {
       ensureDist();
       await installService(options.port);
       await systemctl(['enable', '--now', 'uclash.service']);
       console.log(`UClash 已在 http://127.0.0.1:${options.port} 后台运行`);
+      const ready = await waitForServer(options.port);
+      if (ready && options.open) openBrowser(options.port);
+      else if (!ready) console.warn('UClash 服务已启动，但端口尚未就绪');
       return 0;
     }
     if (options.command === 'stop') {
