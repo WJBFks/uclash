@@ -20,6 +20,35 @@ UClash 默认连接一个已经运行的 mihomo 实例，约定如下：
 
 本项目当前验证过的部署方式是手工安装官方 mihomo 二进制，并创建 `~/.config/systemd/user/mihomo.service`，以 `/usr/local/bin/mihomo -d ~/.config/mihomo` 启动。也可以参考 MetaCubeX 的 [systemd 服务文档](https://github.com/MetaCubeX/Meta-Docs/blob/main/docs/startup/service/index.md)，再按上面的默认值或环境变量适配 UClash。
 
+#### 交给 Agent 安装 mihomo
+
+如果不熟悉 mihomo 的下载、安装和 systemd 配置，可以把下面整段 Prompt 交给能够操作终端的 Agent：
+
+```text
+请在这台 Linux 主机上安装并配置 mihomo，使其能够被 UClash 管理。
+
+官方 mihomo Releases：
+https://github.com/MetaCubeX/mihomo/releases
+
+官方 systemd 服务文档：
+https://github.com/MetaCubeX/Meta-Docs/blob/main/docs/startup/service/index.md
+
+请遵守以下要求：
+
+1. 先只读检查系统发行版、CPU 架构、Node 用户、systemd user session、现有 mihomo 二进制、配置文件、服务状态、监听端口和文件 capability。识别 x86_64/amd64、aarch64/arm64 等架构映射。
+2. 如果已有 mihomo 服务或配置，先报告当前安装方式并备份相关文件。未经我明确确认，不得停止、重启、重新加载或覆盖正在运行的代理服务，避免当前网络连接中断。
+3. 只允许从上述 MetaCubeX/mihomo Releases 官方地址下载适合本机架构的稳定版。不要使用来历不明的镜像或第三方二进制；官方提供校验文件时必须验证校验值。
+4. 首选将二进制安装为 /usr/local/bin/mihomo。如果当前权限或环境不适合，则使用 ~/.local/bin/mihomo，并在最终结果中给出正确的 MIHOMO_BIN。
+5. 配置目录使用 ~/.config/mihomo，主配置文件使用 ~/.config/mihomo/config.yaml。已有配置必须保留有效内容。若没有配置，只创建不会接管网络的最小安全配置：API 仅监听 127.0.0.1:9090、allow-lan 为 false、TUN 默认关闭。不要虚构订阅地址、代理节点或密钥。
+6. 订阅 URL、代理凭据和 mihomo secret 属于敏感信息。不要要求我在公开聊天中提供，不要在日志或最终回复中输出，也不要提交到 Git。需要订阅时说明应由我随后通过本机配置或 UClash 导入。
+7. 创建 user systemd 服务 ~/.config/systemd/user/mihomo.service，服务名必须是 mihomo.service，ExecStart 使用实际 mihomo 路径并带参数 -d %h/.config/mihomo，设置 Restart=on-failure。使用 systemctl --user 管理，不要创建另一个含糊或重复的 mihomo 进程。
+8. 如果我要使用 TUN，先解释需要的权限，再为实际二进制配置最小必要的网络 capability，并验证结果。不要为了省事让整个服务以 root 身份运行。新配置首次启用 TUN 或任何可能改变路由的操作前，必须得到我的明确确认。
+9. 写入前使用 mihomo -t 验证配置。完成安装后验证 mihomo -v、systemd unit、服务状态、127.0.0.1:9090 API、日志和实际配置路径。不得仅凭命令退出码宣称成功。
+10. 最后给出简短报告：安装版本、CPU 架构、二进制路径、配置路径、服务名、API 地址、TUN 是否启用、验证结果，以及 UClash 需要设置的 MIHOMO_BIN、MIHOMO_CONFIG、MIHOMO_SERVICE、MIHOMO_API。敏感值必须脱敏。
+
+在整个过程中优先保护现有连接。只读检查和准备工作可以直接进行；需要 sudo、替换现有文件或影响当前代理连接时，先展示将要执行的具体变更。
+```
+
 ### 快速启动
 
 ```bash
