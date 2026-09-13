@@ -64,7 +64,7 @@ async function newPage(auth401 = false) {
       markImportPreviewStarted();
       pendingImportPreview = createImportPreviewDeferred();
       await pendingImportPreview.promise;
-      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, data: { name: 'late-preview', nodes: 1 } }) });
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, data: { name: 'late-preview', nodes: 1, warning: '预览失败但可继续' } }) });
     }
     return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, data: dataFor(url) }) });
   });
@@ -137,6 +137,7 @@ pendingImportPreview.release();
 await importPreviewResponse;
 await importDialog.getByRole('heading', { name: '确认导入' }).waitFor();
 if (await page.locator('#import-subscription-name').inputValue() !== 'late-preview') throw new Error('订阅预览名称未填入确认弹窗');
+if (!(await importDialog.textContent())?.includes('预览失败但可继续')) throw new Error('非阻断预览警告未显示');
 await page.keyboard.press('Escape');
 await importDialog.waitFor({ state: 'hidden' });
 if (await page.locator('.toast-item.err').count()) throw new Error(`出现错误 toast: ${await page.locator('.toast-item.err').allTextContents()}`);

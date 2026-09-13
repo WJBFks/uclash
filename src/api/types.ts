@@ -214,6 +214,8 @@ export interface ImportPreviewData {
   existing: { name: string; url: string } | null;
   /** 识别到的节点数（尽力而为） */
   nodes: number | null;
+  /** 预览拉取失败时的非阻断提示 */
+  warning?: string | null;
 }
 
 export interface VersionData {

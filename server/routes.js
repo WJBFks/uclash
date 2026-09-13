@@ -474,7 +474,13 @@ const handlers = {
   async 'POST /api/import/preview'({ url }) {
     url = subscriptionUrl(String(url || '').trim());
     if (!url || !/^https?:\/\/.+/i.test(url)) return { ok: false, error: '订阅 URL 无效（需 http(s):// 开头）' };
-    const res = await fetchSubscription(url);
+    let res = { headers: new Headers(), text: '' };
+    let warning = null;
+    try {
+      res = await fetchSubscription(url);
+    } catch (error) {
+      warning = `无法预览订阅内容：${error instanceof Error ? error.message : '网络请求失败'}。可继续填写名称，确认后由 mihomo 拉取并校验。`;
+    }
     const text = res.text;
     let name = null;
     const cd = res.headers.get('content-disposition') || '';
@@ -510,7 +516,7 @@ const handlers = {
         } catch {}
       }
     }
-    return { ok: true, name, existing, nodes };
+    return { ok: true, name, existing, nodes, warning };
   },
 
   // 导入订阅源（= clash import：备份 → 改配置 → 热加载；失败回滚）

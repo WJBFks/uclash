@@ -35,6 +35,7 @@ const impModal = ref<{
   existing?: { name: string; url: string };
   nodes?: number | null;
   detected?: boolean;
+  warning?: string | null;
   msg?: string;
 } | null>(null);
 const newName = ref('');
@@ -114,7 +115,7 @@ async function startImport() {
       impModal.value = { stage: 'merge', existing: d.existing, nodes: d.nodes };
     } else {
       newName.value = d.name || todayStr();
-      impModal.value = { stage: 'name', nodes: d.nodes, detected: Boolean(d.name) };
+      impModal.value = { stage: 'name', nodes: d.nodes, detected: Boolean(d.name), warning: d.warning };
     }
   } catch (e) {
     if (generation !== importPreviewGeneration || !impModal.value) return;
@@ -464,6 +465,7 @@ onMounted(async () => {
         <template v-else-if="impModal.stage === 'name'">
           <h2 id="import-subscription-title">确认导入</h2>
           <p v-if="impModal.nodes" class="muted">识别到 {{ impModal.nodes }} 个节点。</p>
+          <p v-if="impModal.warning" class="si-msg warning">{{ impModal.warning }}</p>
           <p class="muted">{{ impModal.detected ? '已自动识别订阅名（可修改后确认）：' : '订阅名识别失败，已默认填写日期（可修改后确认）：' }}</p>
           <label class="visually-hidden" for="import-subscription-name">订阅名称</label>
           <input id="import-subscription-name" v-model="newName" data-dialog-initial type="text" name="subscription-name" autocomplete="off" class="si-input" />
