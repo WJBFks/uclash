@@ -42,7 +42,14 @@ https://github.com/MetaCubeX/Meta-Docs/blob/main/docs/startup/service/index.md
 5. 配置目录使用 ~/.config/mihomo，主配置文件使用 ~/.config/mihomo/config.yaml。已有配置必须保留有效内容。若没有配置，只创建不会接管网络的最小安全配置：API 仅监听 127.0.0.1:9090、allow-lan 为 false、TUN 默认关闭。不要虚构订阅地址、代理节点或密钥。
 6. 订阅 URL、代理凭据和 mihomo secret 属于敏感信息。不要要求我在公开聊天中提供，不要在日志或最终回复中输出，也不要提交到 Git。需要订阅时说明应由我随后通过本机配置或 UClash 导入。
 7. 创建 user systemd 服务 ~/.config/systemd/user/mihomo.service，服务名必须是 mihomo.service，ExecStart 使用实际 mihomo 路径并带参数 -d %h/.config/mihomo，设置 Restart=on-failure。使用 systemctl --user 管理，不要创建另一个含糊或重复的 mihomo 进程。
-8. 如果我要使用 TUN，先解释需要的权限，再为实际二进制配置最小必要的网络 capability，并验证结果。不要为了省事让整个服务以 root 身份运行。新配置首次启用 TUN 或任何可能改变路由的操作前，必须得到我的明确确认。
+8. 如果我要使用 TUN，先解释需要的权限，并按以下步骤配置与验证：
+   - 执行 `test -c /dev/net/tun` 确认 TUN 设备存在；如果不存在，先报告缺失，不要盲目继续。
+   - 执行 `systemctl --user cat mihomo.service` 读取 `ExecStart=`，确定服务真正使用的 mihomo 二进制绝对路径。不能只依赖 `command -v mihomo`，因为它可能指向另一份二进制。
+   - 向我展示实际路径和将要执行的命令，获得 sudo 授权后执行 `sudo setcap cap_net_admin,cap_net_raw+ep /actual/path/to/mihomo`。只给 mihomo 二进制授予最小必要权限，不要为了省事让整个服务以 root 身份运行。
+   - 执行 `getcap /actual/path/to/mihomo`，必须确认输出包含 `cap_net_admin,cap_net_raw=ep`。如果服务使用的路径与授权路径不同，立即停止并修正。
+   - 提醒我：替换或升级 mihomo 二进制通常会丢失 file capability，升级后必须重新执行 `setcap` 和 `getcap`。
+   - 权限验证通过后，使用通用基础配置 `tun: { enable: false, stack: system, auto-route: true, auto-detect-interface: true }`；保持 TUN 默认关闭，由我随后在 UClash 点击“启动 TUN”。
+   - 新配置首次启用 TUN、重启 mihomo 或任何可能改变路由的操作前，必须得到我的明确确认。
 9. 写入前使用 mihomo -t 验证配置。完成安装后验证 mihomo -v、systemd unit、服务状态、127.0.0.1:9090 API、日志和实际配置路径。不得仅凭命令退出码宣称成功。
 10. 最后给出简短报告：安装版本、CPU 架构、二进制路径、配置路径、服务名、API 地址、TUN 是否启用、验证结果，以及 UClash 需要设置的 MIHOMO_BIN、MIHOMO_CONFIG、MIHOMO_SERVICE、MIHOMO_API。敏感值必须脱敏。
 
