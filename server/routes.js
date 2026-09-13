@@ -14,7 +14,7 @@ import { createConnectionResponseCache, createConnectionTracker } from './lib/co
 const trackConnections = createConnectionTracker();
 const normalizeConnections = createConnectionResponseCache(trackConnections);
 import { managementHandlers } from './management.js';
-import { serial, transaction, backup, reloadValidatedConfig, stateFile, readJson, writeJson, readConfig, atomicWrite, setSection, readOverlay, readDraft, markRuntimeTouched } from './lib/config-store.js';
+import { serial, transaction, backup, reloadValidatedConfig, validateConfig, yamlObject, stateFile, readJson, writeJson, readConfig, atomicWrite, setSection, readOverlay, readDraft, markRuntimeTouched } from './lib/config-store.js';
 
 const { mihomoApi, mihomoBin, mihomoCfg } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
@@ -77,9 +77,57 @@ const handlers = {
   // 服务 start / stop / restart
   async 'POST /api/service'({ action }) {
     if (!['start', 'stop', 'restart'].includes(action)) return { ok: false, error: 'invalid action' };
-    const operation = await run(config.systemctlBin, ['--user', action, config.serviceName], 60000);
-    if (operation.code !== 0) return { ok: false, error: '服务操作失败：' + (operation.stderr || operation.stdout || operation.code) };
-    await sleep(2000);
+    const beforeService = await run(config.systemctlBin, ['--user', 'is-active', config.serviceName], 10000);
+    const wasActive = beforeService.stdout === 'active';
+    let originalConfig = null;
+    let nextTun = null;
+
+    if (action === 'start') {
+      originalConfig = readConfig();
+      const current = yamlObject(originalConfig);
+      const tun = current.tun && typeof current.tun === 'object' && !Array.isArray(current.tun) ? current.tun : {};
+      nextTun = {
+        ...tun,
+        enable: true,
+        'auto-route': tun['auto-route'] ?? true,
+        'auto-detect-interface': tun['auto-detect-interface'] ?? true,
+      };
+      const candidate = setSection(originalConfig, 'tun', nextTun);
+      await validateConfig(candidate);
+      if (candidate !== originalConfig) {
+        backup('启动 TUN 全局代理前');
+        atomicWrite(mihomoCfg, candidate);
+      }
+    }
+
+    try {
+      const operation = await run(config.systemctlBin, ['--user', action, config.serviceName], 60000);
+      if (operation.code !== 0) throw new Error('服务操作失败：' + (operation.stderr || operation.stdout || operation.code));
+      await sleep(2000);
+      if (action === 'start') {
+        const reloaded = await reloadValidatedConfig();
+        if (!reloaded.ok) throw new Error(reloaded.error || 'TUN 配置热加载失败');
+        const runtime = await httpJson(mihomoApi + '/configs');
+        if (!runtime.ok || runtime.json?.tun?.enable !== true) throw new Error('TUN 运行状态未开启');
+        const overlay = readOverlay();
+        overlay.network = {
+          ...overlay.network,
+          tun: { ...(overlay.network?.tun || {}), ...nextTun },
+        };
+        writeJson(stateFile('overrides.json'), overlay);
+      }
+    } catch (error) {
+      if (action === 'start' && originalConfig !== null) {
+        atomicWrite(mihomoCfg, originalConfig);
+        if (wasActive) {
+          try { await reloadValidatedConfig(); } catch {}
+        } else {
+          await run(config.systemctlBin, ['--user', 'stop', config.serviceName], 60000);
+        }
+      }
+      throw error;
+    }
+
     const svc = await run(config.systemctlBin, ['--user', 'is-active', config.serviceName], 10000);
     const active = svc.stdout === 'active';
     return {

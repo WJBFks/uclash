@@ -32,11 +32,10 @@ async function doSvc(action: Action) {
   <div class="card">
     <h2>全局服务（systemd · TUN）</h2>
     <div class="row">
-      <button class="primary" :disabled="busy" @click="doSvc('start')">启动</button>
+      <button class="primary" :disabled="busy" @click="doSvc('start')">启动 TUN</button>
       <button class="danger" :disabled="busy" @click="doSvc('stop')">停止</button>
       <button :disabled="busy" @click="doSvc('restart')">重启</button>
     </div>
-    <div class="hint">stop / restart 会中断 TUN 全局透明代理，确认后执行</div>
+    <div class="hint">启动会开启 TUN 并启用自动路由；stop / restart 会中断全局透明代理</div>
   </div>
 </template>
-
