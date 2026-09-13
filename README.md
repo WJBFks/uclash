@@ -8,7 +8,17 @@
 
 ### 前置要求
 
-请先安装并配置 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，确保 mihomo API 与 user systemd 服务可以正常使用。UClash 默认连接 `http://127.0.0.1:9090`，服务名默认为 `mihomo`。
+UClash 不负责安装代理核心。请先从 [MetaCubeX/mihomo Releases](https://github.com/MetaCubeX/mihomo/releases) 获取 mihomo，并完成配置；源码仓库本身不是 systemd 服务安装器。
+
+UClash 默认连接一个已经运行的 mihomo 实例，约定如下：
+
+- user systemd 服务名为 `mihomo.service`，可通过 `MIHOMO_SERVICE` 修改。
+- mihomo 控制 API 监听 `http://127.0.0.1:9090`，可通过 `MIHOMO_API` 修改。
+- mihomo 可执行文件位于 `/usr/local/bin/mihomo`，可通过 `MIHOMO_BIN` 修改。
+- 主配置位于 `~/.config/mihomo/config.yaml`，可通过 `MIHOMO_CONFIG` 修改。
+- 使用 TUN 时，需要按系统方式授予 mihomo 相应网络权限。
+
+本项目当前验证过的部署方式是手工安装官方 mihomo 二进制，并创建 `~/.config/systemd/user/mihomo.service`，以 `/usr/local/bin/mihomo -d ~/.config/mihomo` 启动。也可以参考 MetaCubeX 的 [systemd 服务文档](https://github.com/MetaCubeX/Meta-Docs/blob/main/docs/startup/service/index.md)，再按上面的默认值或环境变量适配 UClash。
 
 ### 快速启动
 
