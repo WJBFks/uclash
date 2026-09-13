@@ -15,8 +15,10 @@ import type {
 } from '@/api/types';
 
 const toast = useToast();
-const editDialog = useModalDialog('editDialog');
-const importDialog = useModalDialog('importDialog');
+// Keep controller bindings distinct from static template-ref names. Vue treats a
+// same-named setup binding as the template ref target and cannot assign the DOM node.
+const editModal = useModalDialog('editDialog');
+const importModal = useModalDialog('importDialog');
 
 const providers = ref<SubProviderCard[]>([]);
 /** 订阅列表：仅非内置源（内置「默认配置」不再展示，由「恢复默认」按钮承担其职责） */
@@ -72,13 +74,13 @@ async function loadUserinfo(p: SubProviderCard, force = false) {
 const editing = ref<{ name: string; displayName: string; url: string; interval: number } | null>(null);
 const editBusy = ref(false);
 function editSub(p: SubProviderCard) {
-  editDialog.open(closeEditDialog);
+  editModal.open(closeEditDialog);
   editing.value = { name: p.name, displayName: p.displayName || p.name, url: p.url, interval: p.interval || 86400 };
 }
 function closeEditDialog(force = false) {
   if (editBusy.value && !force) return;
   editing.value = null;
-  editDialog.close();
+  editModal.close();
 }
 async function saveEdit() {
   if (!editing.value || !confirm('保存订阅设置并重载配置？可能短暂影响现有连接。')) return;
@@ -137,7 +139,7 @@ async function confirmMerge() {
     });
     toast(d.message);
     impModal.value = null;
-    importDialog.close();
+    importModal.close();
     impUrl.value = '';
     await loadSubs();
     for (const p of providers.value) await loadUserinfo(p, true);
@@ -163,7 +165,7 @@ async function confirmCreate() {
     });
     toast(d.message);
     impModal.value = null;
-    importDialog.close();
+    importModal.close();
     impUrl.value = '';
     await loadSubs();
     for (const p of providers.value) await loadUserinfo(p, true);
@@ -179,15 +181,15 @@ function closeModal() {
   importPreviewGeneration++;
   impBusy.value = false;
   impModal.value = null;
-  importDialog.close();
+  importModal.close();
 }
 
 watch(
   () => impModal.value?.stage,
   (stage, previousStage) => {
     if (!stage) return;
-    if (!previousStage) importDialog.open(closeModal);
-    else importDialog.focusInitial();
+    if (!previousStage) importModal.open(closeModal);
+    else importModal.focusInitial();
   },
   { flush: 'post' },
 );
@@ -435,7 +437,7 @@ onMounted(async () => {
       </p>
     </div>
 
-    <div v-if="editing" class="modal-mask" @click.self="closeEditDialog"><form ref="editDialog" class="card dialog-wide" role="dialog" aria-modal="true" aria-labelledby="edit-subscription-title" tabindex="-1" @keydown="editDialog.onKeydown($event, closeEditDialog)" @submit.prevent="saveEdit">
+    <div v-if="editing" class="modal-mask" @click.self="closeEditDialog"><form ref="editDialog" class="card dialog-wide" role="dialog" aria-modal="true" aria-labelledby="edit-subscription-title" tabindex="-1" @keydown="editModal.onKeydown($event, closeEditDialog)" @submit.prevent="saveEdit">
       <h2 id="edit-subscription-title">编辑订阅</h2><p class="muted">显示名称不改变内部引用。保存 URL 或更新间隔需要重载配置。</p>
       <label class="field">显示名称<input v-model="editing.displayName" data-dialog-initial name="subscription-display-name" autocomplete="off" required /></label>
       <label class="field">订阅 URL<input v-model="editing.url" type="url" name="subscription-url" autocomplete="url" required /></label>
@@ -445,7 +447,7 @@ onMounted(async () => {
 
     <!-- 添加订阅弹窗：正在导入 → 合并询问 / 名字确认 → 写入热加载 → 结果 -->
     <div v-if="impModal" class="modal-mask" @click.self="closeModal">
-      <div ref="importDialog" class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="import-subscription-title" tabindex="-1" :aria-busy="impModal.stage === 'loading' || impModal.stage === 'importing'" @keydown="importDialog.onKeydown($event, closeModal)">
+      <div ref="importDialog" class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="import-subscription-title" tabindex="-1" :aria-busy="impModal.stage === 'loading' || impModal.stage === 'importing'" @keydown="importModal.onKeydown($event, closeModal)">
         <template v-if="impModal.stage === 'loading'">
           <h2 id="import-subscription-title">正在导入…</h2>
           <p class="muted">拉取订阅、识别订阅名并比对已导入订阅，请稍候。</p>
