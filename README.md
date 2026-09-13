@@ -14,7 +14,7 @@ UClash 默认连接一个已经运行的 mihomo 实例，约定如下：
 
 - user systemd 服务名为 `mihomo.service`，可通过 `MIHOMO_SERVICE` 修改。
 - mihomo 控制 API 监听 `http://127.0.0.1:9090`，可通过 `MIHOMO_API` 修改。
-- mihomo 可执行文件位于 `/usr/local/bin/mihomo`，可通过 `MIHOMO_BIN` 修改。
+- UClash 会自动查找 `~/.local/bin/mihomo`、`PATH` 与常见系统安装位置，也可通过 `MIHOMO_BIN` 显式指定。
 - 主配置位于 `~/.config/mihomo/config.yaml`，可通过 `MIHOMO_CONFIG` 修改。
 - 使用 TUN 时，需要按系统方式授予 mihomo 相应网络权限。
 
@@ -138,7 +138,7 @@ src/                   # Vue3 + TS + SCSS 前端
 | `MIHOMO_API` | `http://127.0.0.1:9090` | mihomo 控制 API 地址 |
 | `MIHOMO_SECRET` | 空 | mihomo 控制 API 的 secret |
 | `MIHOMO_CONFIG` | `~/.config/mihomo/config.yaml` | 主配置路径 |
-| `MIHOMO_BIN` | `/usr/local/bin/mihomo` | mihomo 可执行文件路径 |
+| `MIHOMO_BIN` | 自动查找 | mihomo 可执行文件路径 |
 | `MIHOMO_SERVICE` | `mihomo` | systemd user 服务名 |
 | `CW_STATE_DIR` | 项目 `.pi/wj/clash-web/` | 覆盖层、草稿、备份等状态目录（保留旧路径以兼容已有数据） |
 | `CW_BACKUP_LIMIT` | `20` | 本地备份保留数，范围 1–100 |
