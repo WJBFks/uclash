@@ -65,6 +65,7 @@ uclash start
 uclash start --port 18080
 uclash stop
 uclash restart
+uclash restart --no-open
 ```
 
 完成一次 `npm link` 后，可以在任意目录运行 `uclash` 启动本仓库中的 UClash。`uclash` 和 `uclash start` 默认在服务就绪后打开浏览器；服务器或无桌面环境可增加 `--no-open`：
@@ -75,7 +76,7 @@ uclash --port 18080 --no-open
 uclash start --no-open
 ```
 
-`uclash start` 会安装并管理当前用户的 `uclash.service`。`restart` 沿用最近一次 `start` 指定的端口。生产命令只启动仓库内的 `dist/`；如果构建文件不存在，CLI 会提示先运行 `npm run build`。仓库保留 `dist/`，正常 clone 后无需自行构建。
+`uclash start` 会安装并管理当前用户的 `uclash.service`。`restart` 沿用最近一次 `start` 指定的端口，重启后输出访问地址并默认打开浏览器；服务器环境使用 `uclash restart --no-open`。生产命令只启动仓库内的 `dist/`；如果构建文件不存在，CLI 会提示先运行 `npm run build`。仓库保留 `dist/`，正常 clone 后无需自行构建。
 
 开发模式使用 `npm run dev`（Vite 5173 + API 15924）。其他脚本：`npm run build`、`npm run dev:web`、`npm run dev:api`、`npm run typecheck`。
 
@@ -123,6 +124,7 @@ src/                   # Vue3 + TS + SCSS 前端
 ## 配置、草稿与订阅流程
 
 - 规则和 TUN/DNS 等网络设置先保存为草稿，不会立即改变 mihomo 或现有连接；在“网络与配置”页预览后，必须手动确认“应用”才会写入并重载。恢复备份也需要手动确认，失败会回滚。
+- 首页“启动 TUN”在配置缺项时补全通用默认值：`stack: system`、`auto-route: true`、`auto-detect-interface: true`。Linux 主机仍需要 `/dev/net/tun` 与 mihomo 服务的 `CAP_NET_ADMIN`/`CAP_NET_RAW`；缺少时 UClash 会回滚配置并显示检查提示。
 - 单源订阅刷新使用 mihomo 的 `PUT` 更新该 provider，不会全量重载配置；刷新后订阅组和规则不会自动改变，需手动重新应用当前订阅源。Web 订阅写入由 `server/lib/subscriptions.js` 完成；`import-sub.py` 仅保留作历史兼容路径。导入、编辑、删除和激活等明确的配置操作会按页面提示备份并在确认后重载。
 - 备份包含主配置、覆盖层和当前选中源，不包含订阅缓存文件；恢复时要求本机路径和 mihomo 资源仍匹配。导出的备份可能含订阅凭证，请自行妥善保管。
 

@@ -46,6 +46,10 @@ test('starting the global service enables TUN in config and runtime', async (t) 
   const result = await handlers['POST /api/service']({ action: 'start' });
 
   assert.equal(result.ok, true);
-  assert.equal(parse(fs.readFileSync(cfg, 'utf8')).tun.enable, true);
+  const tun = parse(fs.readFileSync(cfg, 'utf8')).tun;
+  assert.equal(tun.enable, true);
+  assert.equal(tun.stack, 'system');
+  assert.equal(tun['auto-route'], true);
+  assert.equal(tun['auto-detect-interface'], true);
   assert.equal(runtime.tun.enable, true);
 });

@@ -19,8 +19,18 @@ export function parseCliArgs(args) {
   let command = 'run';
   if (values[0] && !values[0].startsWith('-')) command = values.shift();
   if (!['run', 'start', 'stop', 'restart'].includes(command)) throw new Error(`未知命令：${command}`);
-  if (['stop', 'restart'].includes(command) && values.length) throw new Error(`${command} 不接受端口参数`);
-  if (['stop', 'restart'].includes(command)) return { command, port: null };
+  if (command === 'stop') {
+    if (values.length) throw new Error('stop 不接受参数');
+    return { command, port: null };
+  }
+  if (command === 'restart') {
+    let open = true;
+    for (const arg of values) {
+      if (arg === '--no-open') open = false;
+      else throw new Error('restart 仅接受 --no-open 参数');
+    }
+    return { command, port: null, open };
+  }
 
   let port = DEFAULT_PORT;
   let open = true;
@@ -98,6 +108,12 @@ export function renderServiceUnit({ rootDir, nodeBin, port }) {
   return `[Unit]\nDescription=UClash Web\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=${escapeUnitPath(rootDir)}\nEnvironment=PORT=${port}\nExecStart=${quoteUnit(nodeBin)} ${quoteUnit(path.join(rootDir, 'server/index.js'))}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
 }
 
+export function servicePortFromUnit(content) {
+  const match = String(content).match(/^Environment=(?:"|')?PORT=(\d+)(?:"|')?\s*$/m);
+  if (!match) return DEFAULT_PORT;
+  try { return portNumber(match[1]); } catch { return DEFAULT_PORT; }
+}
+
 function systemctl(args, stdio = 'inherit') {
   return new Promise((resolve, reject) => {
     const child = spawn('/usr/bin/systemctl', ['--user', ...args], { stdio });
@@ -164,8 +180,13 @@ export async function main(args = process.argv.slice(2)) {
       return 0;
     }
     if (!fs.existsSync(servicePath())) throw new Error('UClash 后台服务尚未安装，请先运行 uclash start');
+    const port = servicePortFromUnit(fs.readFileSync(servicePath(), 'utf8'));
     await systemctl(['restart', 'uclash.service']);
-    console.log('UClash 已重启');
+    const ready = await waitForServer(port);
+    const url = `http://127.0.0.1:${port}`;
+    if (!ready) throw new Error(`UClash 已重启，但 ${url} 尚未就绪`);
+    console.log(`UClash 已重启：${url}`);
+    if (options.open) openBrowser(port);
     return 0;
   } catch (error) {
     console.error(`uclash: ${error instanceof Error ? error.message : error}`);

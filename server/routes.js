@@ -89,6 +89,7 @@ const handlers = {
       nextTun = {
         ...tun,
         enable: true,
+        stack: tun.stack || 'system',
         'auto-route': tun['auto-route'] ?? true,
         'auto-detect-interface': tun['auto-detect-interface'] ?? true,
       };
@@ -124,6 +125,12 @@ const handlers = {
         } else {
           await run(config.systemctlBin, ['--user', 'stop', config.serviceName], 60000);
         }
+        const permissionHint = process.platform === 'linux'
+          ? fs.existsSync('/dev/net/tun')
+            ? `请确认 mihomo 服务拥有 CAP_NET_ADMIN 与 CAP_NET_RAW，并查看 journalctl --user -u ${config.serviceName}`
+            : '系统缺少 /dev/net/tun，请先加载 TUN 内核模块'
+          : '请检查 mihomo 的 TUN 权限与服务日志';
+        throw new Error(`${error instanceof Error ? error.message : error}；${permissionHint}`);
       }
       throw error;
     }

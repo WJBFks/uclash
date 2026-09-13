@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { browserCommand, parseCliArgs, renderServiceUnit } from '../server/cli.js';
+import { browserCommand, parseCliArgs, renderServiceUnit, servicePortFromUnit } from '../server/cli.js';
 
 test('uclash defaults to foreground mode on port 15924', () => {
   assert.deepEqual(parseCliArgs([]), { command: 'run', port: 15924, open: true });
@@ -18,14 +18,15 @@ test('uclash can suppress browser opening', () => {
 
 test('uclash parses stop and restart without a port', () => {
   assert.deepEqual(parseCliArgs(['stop']), { command: 'stop', port: null });
-  assert.deepEqual(parseCliArgs(['restart']), { command: 'restart', port: null });
+  assert.deepEqual(parseCliArgs(['restart']), { command: 'restart', port: null, open: true });
+  assert.deepEqual(parseCliArgs(['restart', '--no-open']), { command: 'restart', port: null, open: false });
 });
 
 test('uclash rejects invalid arguments and ports', () => {
   assert.throws(() => parseCliArgs(['--port', '0']), /端口/);
   assert.throws(() => parseCliArgs(['stop', '--port', '15924']), /不接受/);
   assert.throws(() => parseCliArgs(['launch']), /未知命令/);
-  assert.throws(() => parseCliArgs(['restart', '--no-open']), /不接受/);
+  assert.throws(() => parseCliArgs(['restart', '--port', '15924']), /仅接受/);
 });
 
 test('browser command uses the platform launcher', () => {
@@ -40,4 +41,10 @@ test('systemd unit starts the committed dist server with an absolute Node path',
   assert.match(unit, /Environment=PORT=15924/);
   assert.match(unit, /ExecStart="\/opt\/node bin\/node" "\/tmp\/U Clash\/server\/index\.js"/);
   assert.match(unit, /Restart=on-failure/);
+});
+
+test('restart discovers the web port from the installed service unit', () => {
+  assert.equal(servicePortFromUnit('[Service]\nEnvironment=PORT=18080\n'), 18080);
+  assert.equal(servicePortFromUnit('[Service]\nEnvironment="PORT=15924"\n'), 15924);
+  assert.equal(servicePortFromUnit('[Service]\n'), 15924);
 });
