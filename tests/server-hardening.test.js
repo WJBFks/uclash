@@ -235,3 +235,22 @@ test('provider writer updates only mysub URL and preserves unrelated healthcheck
   assert.equal(value.url, 'https://health.example/');
   assert.equal(value['proxy-providers'].mysub.url, 'https://new.example/sub');
 });
+
+test('activating a provider scaffolds fallback groups when the base config has no provider groups', async () => {
+  const { editProvider } = await import('../server/lib/subscriptions.js');
+  fs.writeFileSync(cfg, 'mode: rule\nrules:\n  - MATCH,PROXY\n');
+  editProvider({ name: 'new-source', url: 'https://new.example/sub', switchTo: true });
+  const value = parse(fs.readFileSync(cfg, 'utf8'));
+  assert.equal(value['proxy-providers']['new-source'].url, 'https://new.example/sub');
+  assert.deepEqual(value['proxy-groups'].find((group) => group.name === 'PROXY').use, ['new-source']);
+  assert.deepEqual(value['proxy-groups'].find((group) => group.name === 'Auto').use, ['new-source']);
+});
+
+test('activating a provider preserves static members when adapting existing fallback groups', async () => {
+  const { editProvider } = await import('../server/lib/subscriptions.js');
+  fs.writeFileSync(cfg, 'proxy-groups:\n  - name: PROXY\n    type: select\n    proxies: [DIRECT]\nrules: ["MATCH,PROXY"]\n');
+  editProvider({ name: 'new-source', url: 'https://new.example/sub', switchTo: true });
+  const group = parse(fs.readFileSync(cfg, 'utf8'))['proxy-groups'][0];
+  assert.deepEqual(group.proxies, ['DIRECT']);
+  assert.deepEqual(group.use, ['new-source']);
+});

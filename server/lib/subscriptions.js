@@ -30,12 +30,28 @@ export function editProvider({ name, url, remove = false, switchTo = false }) {
   }
   text = setSection(text, 'proxy-providers', providers);
   if (switchTo) {
-    const groups = obj['proxy-groups'] || [];
+    const groups = Array.isArray(obj['proxy-groups'])
+      ? obj['proxy-groups'].map(group => ({ ...group }))
+      : [];
     let count = 0;
     for (const group of groups) {
       if (Array.isArray(group.use) && group.use.length) { group.use = [name]; count++; }
     }
-    if (!count) throw new Error('没有引用订阅的基础代理组，无法激活');
+    if (!count) {
+      const proxy = groups.find(group => group?.name === 'PROXY');
+      if (proxy) proxy.use = [name];
+      else groups.push({ name: 'PROXY', type: 'select', use: [name] });
+
+      const auto = groups.find(group => group?.name === 'Auto');
+      if (auto) auto.use = [name];
+      else groups.push({
+        name: 'Auto',
+        type: 'url-test',
+        use: [name],
+        url: 'https://www.gstatic.com/generate_204',
+        interval: 300,
+      });
+    }
     text = setSection(text, 'proxy-groups', groups);
   }
   yamlObject(text);
