@@ -11,7 +11,7 @@ export function useStatus() {
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function refresh() {
-    if (inflight) return;
+    if (inflight || document.hidden) return;
     inflight = true;
     try {
       status.value = await api<StatusData>('/status', { timeout: 15000 });

@@ -134,7 +134,30 @@ if not name or name == 'mysub':
 # 2b. 新增 provider：插入段 + 切换 PROXY/Auto 组对 mysub 的引用
 else:
     if name in providers:
-        sys.exit(f'provider 名 {name} 已存在（现有: {", ".join(sorted(providers))}），请换一个名字')
+        # 合并模式：更新已存在 provider 的 url（clash-web「检测到已导入相同链接 → 合并」路径）
+        j = None
+        for k in range(i + 1, end):
+            m = re.match(r'^  (\S[^:]*):\s*$', lines[k])
+            if m and m.group(1).strip('"\'') == name:
+                j = k
+                break
+        if j is None:
+            sys.exit(f'provider {name} 声明块未找到')
+        k = j + 1
+        updated_url = False
+        while k < end and not re.match(r'^  \S[^:]*:\s*$', lines[k]):
+            m = re.match(r'^(\s*url:\s*)(.*)$', lines[k])
+            if m:
+                lines[k] = m.group(1) + '"' + url + '"'
+                updated_url = True
+                break
+            k += 1
+        if not updated_url:
+            sys.exit(f'provider {name} 声明块中未找到 url 行')
+        out = '\n'.join(lines) + '\n'
+        open(path, 'w', encoding='utf-8').write(out)
+        print(f'[import] 合并完成：已更新 provider {name} 的 url，配置已写入（旧版已备份为 .bak.*）')
+        sys.exit(0)
     indent = re.search(r'^  \S', '\n'.join(lines[i + 1:end]) or '  x: y').group(0)[:2]
     new = [f'  {name}:', '    type: http', f'    url: "{url}"', '    interval: 86400', f'    path: ./providers/{name}.yaml']
     lines = lines[:end] + new + [''] + lines[end:]

@@ -38,12 +38,12 @@ const modeText = computed(() => {
     <div class="kv">
       <div class="item">
         <div class="k">服务状态</div>
-        <div class="v"><span :class="['dot', svcClass]"></span>{{ svcText }}</div>
+        <div class="v"><span :class="['dot', svcClass]" aria-hidden="true"></span>{{ svcText }}</div>
       </div>
       <div class="item">
         <div class="k">TUN 全局</div>
         <div class="v">
-          <span :class="['dot', (status?.tun ? 'on' : 'off')]"></span>
+          <span :class="['dot', (status?.tun ? 'on' : 'off')]" aria-hidden="true"></span>
           {{ status?.tun ? `开启 (${status.tun})` : '关闭' }}
         </div>
       </div>
@@ -56,14 +56,7 @@ const modeText = computed(() => {
         <div class="v">{{ modeText }}</div>
       </div>
       <div class="item">
-        <div class="k">终端代理</div>
-        <div class="v">
-          <span :class="['dot', (status?.proxyOn ? 'on' : 'off')]"></span>
-          {{ status?.proxyOn ? '开' : '关' }}
-        </div>
-      </div>
-      <div class="item">
-        <div class="k">出口 IP <button class="small" @click="$emit('refreshIp')">↻</button></div>
+        <div class="k">出口 IP <button class="small" aria-label="刷新出口 IP" @click="$emit('refreshIp')">↻</button></div>
         <div class="v">{{ status?.exitIp || '获取中…' }}</div>
       </div>
     </div>

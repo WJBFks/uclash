@@ -7,9 +7,9 @@
 # 依赖
 node_modules/
 
-# 前端构建产物
-dist/
+# 前端构建产物提交到仓库，clone 后可直接启动生产页面
 # 参考截图（本地临时文件）
+/*.png
 9265e3b3-4249-49bf-b900-ccfa4b2a60c7.png
 933d1211-bbee-4152-8c1d-7ac7c0420536.png
 
@@ -26,3 +26,4 @@ tsconfig.*.tsbuildinfo
 768808b1-3e08-4a6a-8074-c9d8bc8d6cf1.png
 96dbb124-9a46-433a-9856-f8ea79c19945.png
 a51118ad-6180-42d1-88d6-a24bdf8332d7.png
+491f53c4-7b07-451a-9cd3-d726f6594af7.png

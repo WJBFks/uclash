@@ -1,9 +1,12 @@
 {
-  "name": "clash-web",
+  "name": "uclash",
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "mihomo 代理管理 Web UI（Vue3 + Vite + TS + SCSS 前端 / 零依赖 Node 后端），监听 15924 端口",
+  "description": "UClash 通用代理管理 Web UI",
+  "bin": {
+    "uclash": "bin/uclash.js"
+  },
   "scripts": {
     "dev": "concurrently -k -n web,api -c blue,green \"vite\" \"CW_DEV=1 node server/index.js\"",
     "dev:web": "vite",
@@ -11,10 +14,12 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
-    "vue": "^3.5.42"
+    "vue": "^3.5.42",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

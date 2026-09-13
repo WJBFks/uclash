@@ -27,8 +27,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="toast-box">
-    <div v-for="t in toasts" :key="t.id" :class="['toast-item', { err: t.err, leaving: t.leaving }]">
+  <div class="toast-box" aria-live="polite" aria-atomic="true">
+    <div v-for="t in toasts" :key="t.id" :class="['toast-item', { err: t.err, leaving: t.leaving }]" role="status">
       {{ t.msg }}
     </div>
   </div>

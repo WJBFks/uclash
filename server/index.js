@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * clash-web v2 — mihomo 代理管理 Web UI 后端
+ * UClash v2 — 通用代理管理 Web UI 后端
  *
- * 零运行时依赖（仅 node: 内置模块）：
+ * Node ESM 后端，配置编辑使用 yaml 解析器：
  *   - /api/*  JSON API（mihomo REST 封装）
  *   - 其余    静态文件（dist/，由 Vite 构建产物）
  *
@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { handlers } from './routes.js';
+import { authorize } from './lib/security.js';
 import { startTrafficSampler } from './mihomo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +46,7 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
-async function readBody(req, limit = 100 * 1024) {
+async function readBody(req, limit = 8 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', (d) => {
@@ -118,12 +119,19 @@ function serveStatic(req, res, pathname, rootDir) {
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost');
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    return res.end();
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  if (u.pathname.startsWith('/api/')) {
+    const denied = authorize(req, config);
+    if (denied) return sendJson(res, denied.status, { ok: false, error: denied.error });
+    if (req.headers.origin) {
+      res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   }
 
   try {
@@ -147,8 +155,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+if (!['127.0.0.1', 'localhost', '::1'].includes(HOST) && config.token.length < 24) {
+  throw new Error('远程监听需要至少 24 字符的 CW_TOKEN');
+}
 server.listen(PORT, HOST, () => {
   startTrafficSampler();
-  console.log(`[clash-web v2] listening on http://localhost:${PORT}  (mihomo api: ${config.mihomoApi})`);
-  console.log(`[clash-web v2] 前端: ${FRONTEND_MODE === 'static' ? '静态托管 dist/（生产模式）' : '转发到 vite dev server ' + VITE_DEV_URL + '（开发模式）'}`);
+  console.log(`[UClash v2] listening on http://localhost:${server.address().port}  (mihomo api: ${config.mihomoApi})`);
+  console.log(`[UClash v2] 前端: ${FRONTEND_MODE === 'static' ? '静态托管 dist/（生产模式）' : '转发到 vite dev server ' + VITE_DEV_URL + '（开发模式）'}`);
 });

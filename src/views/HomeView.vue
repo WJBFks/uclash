@@ -19,5 +19,5 @@ const refreshStatus = inject<() => void>('refreshStatus', () => {});
   <StatusCard :status="status" :status-error="statusError" :last-updated="lastUpdated" @refresh-ip="refreshStatus" />
   <ServicePanel :status="status" />
   <TrafficChart />
-  <ConnectionsPanel />
+  <ConnectionsPanel compact />
 </template>

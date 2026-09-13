@@ -3,63 +3,21 @@
  * 键格式：`METHOD /path`，与 index.js 的分发逻辑一致。
  */
 import fs from 'node:fs';
-import http from 'node:http';
 import path from 'node:path';
-import { config, PROXY_ON_CONTENT } from './config.js';
-import { run, httpJson, fetchExitIp, getTrafficSnapshot, snapshotProviders, sleep } from './mihomo.js';
-import { syncSubscriptionGroups, configProviderNames, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules, getSelectedSource, setSelectedSource, ensureBaseBackup, restoreDefaultConfig, readBaseSectionCounts, readBaseGroupNames } from './lib/group-sync.js';
+import { config } from './config.js';
+import { run, httpJson, fetchExitIp, getConnectionsSnapshot, getTrafficSnapshot, sleep } from './mihomo.js';
+import { syncSubscriptionGroups, readProviderRules, readConfigProviders, findProviderRefs, parseProviderFile, parseYamlRules, getSelectedSource, setSelectedSource, ensureBaseBackup, restoreDefaultConfig, readBaseSectionCounts, readBaseGroupNames, readProviderGroups } from './lib/group-sync.js';
 
-const { mihomoApi, mihomoBin, mihomoCfg, proxyOnFile, importScript } = config;
+import { fetchSubscription } from './lib/fetch-subscription.js';
+import { editProvider, providerName, subscriptionUrl } from './lib/subscriptions.js';
+import { createConnectionResponseCache, createConnectionTracker } from './lib/connections.js';
+const trackConnections = createConnectionTracker();
+const normalizeConnections = createConnectionResponseCache(trackConnections);
+import { managementHandlers } from './management.js';
+import { serial, transaction, backup, reloadValidatedConfig, stateFile, readJson, writeJson, readConfig, atomicWrite, setSection, readOverlay, readDraft, markRuntimeTouched } from './lib/config-store.js';
+
+const { mihomoApi, mihomoBin, mihomoCfg } = config;
 const PROVIDERS_DIR = path.join(path.dirname(mihomoCfg), 'providers');
-
-/**
- * 解析 provider 缓存文件里的 proxy-groups（复用 group-sync.js 的 parseProviderFile：
- * 同时支持块状与流式（`- { name: ..., proxies: [...] }`）两种 YAML 写法；零依赖不用 yaml 库）。
- * 订阅源 yaml 里定义的组 mihomo 不会激活（provider 只导入节点），这里提取出来供前端展示。
- */
-function parseYamlGroups(text) {
-  try {
-    return parseProviderFile(text).groups.map((g) => ({ name: g.name, type: g.type, members: g.members }));
-  } catch {
-    return [];
-  }
-}
-
-// mtime 缓存，避免 3s 轮询反复读文件
-const providerGroupsCache = new Map(); // file → { mtimeMs, groups }
-function readProviderGroups(activeNames = null) {
-  const dir = path.join(path.dirname(mihomoCfg), 'providers');
-  const out = [];
-  let files = [];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
-  } catch {
-    return out;
-  }
-  for (const f of files) {
-    const provName = f.replace(/\.ya?ml$/, '');
-    if (activeNames && !activeNames.includes(provName)) continue;
-    const file = path.join(dir, f);
-    let st;
-    try {
-      st = fs.statSync(file);
-    } catch {
-      continue;
-    }
-    const hit = providerGroupsCache.get(file);
-    if (hit && hit.mtimeMs === st.mtimeMs) {
-      out.push(...hit.groups);
-      continue;
-    }
-    let groups = [];
-    try {
-      groups = parseYamlGroups(fs.readFileSync(file, 'utf8'));
-    } catch {}
-    providerGroupsCache.set(file, { mtimeMs: st.mtimeMs, groups });
-    out.push(...groups);
-  }
-  return out;
-}
 
 // ---- 订阅用量（subscription-userinfo 响应头，经 mihomo 出口拉取，10 分钟缓存）----
 const userinfoCache = new Map(); // name -> { at, info }
@@ -81,15 +39,12 @@ function parseUserinfoHeaders(hu, hm) {
   return info.upload != null || info.expire != null ? info : null;
 }
 
-async function fetchUserinfo(name, url) {
+async function fetchUserinfo(name, url, force = false) {
   const hit = userinfoCache.get(name);
-  if (hit && Date.now() - hit.at < USERINFO_TTL) return hit.info;
+  if (!force && hit && Date.now() - hit.at < USERINFO_TTL) return hit.info;
   let info = null;
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
-    const res = await fetch(url, { signal: ctrl.signal, redirect: 'follow', headers: { 'User-Agent': 'clash-web/2.0' } });
-    clearTimeout(timer);
+    const res = await fetchSubscription(url, { headersOnly: true, timeout: 15000 });
     info = parseUserinfoHeaders(res.headers.get('subscription-userinfo') || '', res.headers.get('subscription-expire') || '');
   } catch {
     info = null;
@@ -99,25 +54,22 @@ async function fetchUserinfo(name, url) {
 }
 
 const handlers = {
-  // 状态总览（= clash status）
+  // 状态总览
   async 'GET /api/status'() {
-    const [svc, tun, proxyR, proxyOn, exitIp, verR, cfgR] = await Promise.all([
-      run('systemctl', ['--user', 'is-active', 'mihomo'], 10000),
-      run('bash', ['-c', "ip -br link 2>/dev/null | awk '{print $1}' | grep -E '^(Meta|tun)' | head -1"], 10000),
+    const [svc, proxyR, exitIp, verR, cfgR] = await Promise.all([
+      run(config.systemctlBin, ['--user', 'is-active', config.serviceName], 10000),
       httpJson(mihomoApi + '/proxies/PROXY'),
-      Promise.resolve(fs.existsSync(proxyOnFile)),
       fetchExitIp(),
       run(mihomoBin, ['-v'], 10000),
       httpJson(mihomoApi + '/configs'),
     ]);
     return {
       service: svc.code === 0 && svc.stdout === 'active' ? 'active' : svc.stdout || 'unknown',
-      tun: tun.stdout || null,
+      tun: cfgR.ok && cfgR.json?.tun?.enable ? (cfgR.json.tun.device || 'TUN') : null,
       node: proxyR.ok && proxyR.json && typeof proxyR.json.now === 'string' ? proxyR.json.now.trim() : null,
-      proxyOn,
       exitIp,
       version: verR.code === 0 && verR.stdout ? verR.stdout.split('\n')[0] : null,
-      mihomoAlive: Boolean(proxyR.ok && proxyR.json),
+      mihomoAlive: Boolean(cfgR.ok && cfgR.json),
       mode: cfgR.ok && cfgR.json ? (cfgR.json.mode || 'rule') : null,
     };
   },
@@ -125,9 +77,10 @@ const handlers = {
   // 服务 start / stop / restart
   async 'POST /api/service'({ action }) {
     if (!['start', 'stop', 'restart'].includes(action)) return { ok: false, error: 'invalid action' };
-    await run('systemctl', ['--user', action, 'mihomo'], 60000);
+    const operation = await run(config.systemctlBin, ['--user', action, config.serviceName], 60000);
+    if (operation.code !== 0) return { ok: false, error: '服务操作失败：' + (operation.stderr || operation.stdout || operation.code) };
     await sleep(2000);
-    const svc = await run('systemctl', ['--user', 'is-active', 'mihomo'], 10000);
+    const svc = await run(config.systemctlBin, ['--user', 'is-active', config.serviceName], 10000);
     const active = svc.stdout === 'active';
     return {
       ok: action === 'stop' ? !active : active,
@@ -137,18 +90,6 @@ const handlers = {
         : action === 'stop' ? (!active ? '全局代理服务已停止（TUN 已关闭，流量回直连）' : '停止失败')
         : active ? '全局代理服务已重启（TUN 重新接管）' : '重启失败',
     };
-  },
-
-  // 终端代理开关（= clash on / off）
-  async 'POST /api/proxy-env'({ on }) {
-    if (on) {
-      const r = await httpJson(mihomoApi + '/version');
-      if (!r.ok) return { ok: false, error: 'mihomo 未在运行，无法开启终端代理（先启动全局服务）' };
-      fs.writeFileSync(proxyOnFile, PROXY_ON_CONTENT);
-      return { ok: true, message: 'clash 代理已开启（之后新开的终端均生效）' };
-    }
-    fs.rmSync(proxyOnFile, { force: true });
-    return { ok: true, message: 'clash 终端代理已关闭（如需关闭全局 TUN，用停止服务）' };
   },
 
   // 全量代理组视图（Clash Verge 代理页同款数据源）：所有可切换组 + 节点 meta + 订阅未生效组
@@ -291,30 +232,12 @@ const handlers = {
 
     // 单项 healthcheck：GET /providers/proxies/{provider}/{name}/healthcheck?url=..&timeout=10000
     const PER_TEST_TIMEOUT = 10000;
-    const testOne = (name) =>
-      new Promise((resolve) => {
-        const provider = owner[name];
-        const encName = encodeURIComponent(name);
-        const p = `/providers/proxies/${encodeURIComponent(provider)}/${encName}/healthcheck?url=${encodeURIComponent(testUrl)}&timeout=${PER_TEST_TIMEOUT}`;
-        const done = (val) => resolve(val);
-        const req = http.request(
-          { host: '127.0.0.1', port: 9090, path: p, method: 'GET', timeout: PER_TEST_TIMEOUT + 3000 },
-          (res) => {
-            let b = '';
-            res.on('data', (d) => (b += d));
-            res.on('end', () => {
-              let delay = null;
-              try {
-                if (res.statusCode === 200) delay = JSON.parse(b).delay;
-              } catch {}
-              done({ name, ok: res.statusCode === 200 && delay !== null && delay >= 0, latency: delay, http: res.statusCode, error: res.statusCode === 200 ? null : '测速失败（节点不通或 DNS 解析失败）' });
-            });
-          }
-        );
-        req.on('timeout', () => req.destroy());
-        req.on('error', () => done({ name, ok: false, latency: null, http: null, error: 'mihomo API 无响应' }));
-        req.end();
-      });
+    const testOne = async (name) => {
+      const endpoint = '/providers/proxies/' + encodeURIComponent(owner[name]) + '/' + encodeURIComponent(name) + '/healthcheck?url=' + encodeURIComponent(testUrl) + '&timeout=' + PER_TEST_TIMEOUT;
+      const r = await httpJson(mihomoApi + endpoint, 'GET', null, PER_TEST_TIMEOUT + 3000);
+      const delay = r.json?.delay;
+      return { name, ok: r.ok && typeof delay === 'number' && delay >= 0, latency: delay ?? null, http: r.status, error: r.ok ? null : '测速失败' };
+    };
 
     // 全并发（mihomo 侧各自独立出站测试，不抢选择器，可安全并发）
     const results = await Promise.all(names.map(testOne));
@@ -370,6 +293,8 @@ const handlers = {
       const hit = userinfoCache.get(name);
       return {
         name,
+        displayName: readJson(stateFile('subscription-labels.json'), {})[name] || name,
+        refreshStatus: readJson(stateFile('subscription-updates.json'), {})[name] || null,
         url,
         interval: cp ? cp.interval : 0,
         nodes,
@@ -400,22 +325,24 @@ const handlers = {
   },
 
   // 订阅用量/到期：拉取订阅 URL 读 subscription-userinfo 响应头（经 mihomo 出口），10 分钟缓存
-  async 'GET /api/subscriptions/userinfo'({ name }) {
+  async 'GET /api/subscriptions/userinfo'({ name, force }) {
     name = String(name || '').trim();
     if (name === 'default') return { ok: true, name, userinfo: null }; // 默认配置无订阅用量
     const cp = readConfigProviders().find((x) => x.name === name);
     if (!cp || !cp.url) return { ok: false, error: `未找到订阅源「${name || '?'}」或其 URL` };
-    const info = await fetchUserinfo(name, cp.url);
+    const info = await fetchUserinfo(name, cp.url, force === '1');
     return { ok: true, name, userinfo: info };
   },
 
   // 注入/激活订阅源（独占）：让主配置组（PROXY/Auto 等注入块之外的组）的 use: 指向该源；
-  // 未声明的先补声明。流程：备份 → python(PCREATE?+PSWITCH) → 热加载 → 同步订阅组（失败回滚）
+  // 未声明的先补声明。流程：备份 → YAML 结构修改 → 同步订阅组并热加载（失败回滚）
   async 'POST /api/subscriptions/activate'({ name }) {
     name = String(name || '').trim();
     if (!name) return { ok: false, error: '请提供要激活的订阅源名称' };
+    if (name !== 'default') providerName(name);
     if (name === 'default') {
       // 恢复默认配置：回到原始规则/组快照（兼作备份与测试）
+      backup('恢复默认配置前');
       const r = await restoreDefaultConfig();
       if (!r.ok) return { ok: false, error: r.error, rolledBack: r.rolledBack };
       return { ok: true, message: r.changed
@@ -427,7 +354,7 @@ const handlers = {
       ? path.resolve(path.dirname(mihomoCfg), cp.path)
       : path.join(PROVIDERS_DIR, `${name}.yaml`);
     if (!fs.existsSync(filePath)) return { ok: false, error: `订阅源「${name}」没有本地缓存文件，无法激活` };
-    if (getSelectedSource() === name) return { ok: false, error: `订阅源「${name}」已是当前激活源` };
+
     let url = cp && cp.url ? cp.url : '';
     if (!url) {
       try {
@@ -437,29 +364,24 @@ const handlers = {
     }
     if (!cp && !url) return { ok: false, error: `订阅源「${name}」未声明且无 URL，请先用顶部输入框导入` };
     const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '');
-    const bak = `${mihomoCfg}.bak.${ts}`;
+    const bak = `${mihomoCfg}.bak.${ts}.${Math.random().toString(36).slice(2, 8)}`;
     fs.copyFileSync(mihomoCfg, bak);
     ensureBaseBackup(); // 首次激活前保存原始配置快照（默认配置的备份/恢复点）
-    const p = await run('python3', [importScript], 30000, {
-      CFG: mihomoCfg, URL: url, PNAME: name, PCREATE: cp ? '0' : '1', PSWITCH: '1',
-    });
-    if (p.code !== 0) {
-      try { fs.copyFileSync(bak, mihomoCfg); } catch {}
-      return { ok: false, error: '激活失败，已回滚到备份\n' + (p.stderr || p.stdout), rolledBack: true };
-    }
+    backup('应用订阅前');
+    editProvider({ name, url, switchTo: true });
     // 统一由 sync 重建注入块（组 + 规则合并）并热加载（被 mihomo 拒则自动回滚）
     let tail = '';
     try {
       const gs = await syncSubscriptionGroups(name);
-      if (gs.ok === false) tail += `；订阅组/规则同步失败：${gs.error}`;
+      if (gs.ok === false) throw new Error(gs.error);
       else if (gs.changed) tail += `；已重建 ${gs.injected} 个订阅组，合并 ${gs.rules} 条订阅规则`;
       else {
         // 注入块无变化，但 use: 引用可能已切换 → 仍需重载让 mihomo 生效
-        const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
-        if (!rr.ok) tail += '；注：热加载未成功' + (rr.error ? '（服务未运行？）' : `（HTTP ${rr.status}）`) + '，将在下次重载时生效';
+        const rr = await reloadValidatedConfig();
+        if (!rr.ok) throw new Error(rr.error || '热加载未成功');
         else { await sleep(2000); tail += '；已热加载'; }
       }
-    } catch (e) { tail = '；订阅组/规则同步异常：' + (e.message || e); }
+    } catch (e) { throw e; }
     return { ok: true, message: `已激活订阅源「${name}」（PROXY/Auto 等主配置组已指向它）${tail}` };
   },
 
@@ -468,6 +390,7 @@ const handlers = {
     name = String(name || '').trim();
     if (!name) return { ok: false, error: '请提供要删除的订阅源名称' };
     if (name === 'default') return { ok: false, error: '默认配置是内置备份（原始规则/组快照），不能删除' };
+    providerName(name);
     const cfgProvs = readConfigProviders();
     const cp = cfgProvs.find((x) => x.name === name);
     const filePath = cp && cp.path
@@ -478,15 +401,12 @@ const handlers = {
       const refs = findProviderRefs(name);
       if (refs.length) return { ok: false, error: `订阅源「${name}」被主配置组 ${refs.join('、')} 引用，删除会导致配置无效；请先改这些组的 use` };
       const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '');
-      const bak = `${mihomoCfg}.bak.${ts}`;
+      const bak = `${mihomoCfg}.bak.${ts}.${Math.random().toString(36).slice(2, 8)}`;
       fs.copyFileSync(mihomoCfg, bak);
       const cacheBak = `${filePath}.bak.${ts}`;
       try { fs.copyFileSync(filePath, cacheBak); } catch {}
-      const p = await run('python3', [importScript], 30000, { CFG: mihomoCfg, URL: '', PNAME: name, PDEL: '1' });
-      if (p.code !== 0) {
-        try { fs.copyFileSync(bak, mihomoCfg); } catch {}
-        return { ok: false, error: '删除失败，已回滚到备份\n' + (p.stderr || p.stdout), rolledBack: true };
-      }
+      backup('删除订阅前');
+      editProvider({ name, remove: true });
       // 顺序关键：先删缓存文件再同步组（重建注入块时不再引用被删源）；
       // 若先热加载，注入块仍引用被删源 → mihomo 400 且文件遗留悬空引用
       try { fs.rmSync(filePath, { force: true }); } catch {}
@@ -504,8 +424,8 @@ const handlers = {
         if (gs.changed) tail += '；已重建订阅组（清理被删源的组）';
         else {
           // 注入块无变化时 sync 会跳过热加载 → 手动重载让 mihomo 丢弃被删源
-          const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
-          if (!rr.ok) tail = '；注：热加载未成功' + (rr.error ? '（服务未运行？）' : `（HTTP ${rr.status}）`) + '，被删源将在下次重载时移除';
+          const rr = await reloadValidatedConfig();
+          if (!rr.ok) throw new Error(rr.error || '热加载未成功');
           else await sleep(2000);
         }
       } catch (e) {
@@ -522,74 +442,101 @@ const handlers = {
     userinfoCache.delete(name);
     let tail = '';
     try {
-      const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
+      const rr = await reloadValidatedConfig();
       if (rr.ok) await sleep(1500);
-      else tail = '；注：mihomo 热加载未成功' + (rr.error ? `（${rr.error}，服务未运行？）` : `（HTTP ${rr.status}）`) + '，若其内存仍持有该源，缓存文件可能在下次更新时重建';
-    } catch (e) { tail = '；注：mihomo 热加载异常：' + (e.message || e); }
+      else throw new Error(rr.error || '热加载未成功');
+    } catch (e) { throw e; }
     return { ok: true, message: `已删除订阅源「${name}」（仅本地缓存，未在 config.yaml 声明）${tail}` };
   },
 
-  // 刷新全部订阅（= clash update）：热加载 + 比对 providers 缓存文件变化来判定是否真的拉到
-  async 'POST /api/subscriptions/refresh'() {
-    const r = await httpJson(mihomoApi + '/providers/proxies');
-    if (!r.ok || !r.json) return { ok: false, error: '获取订阅列表失败（mihomo 服务未运行或无订阅配置）' };
-    const provObj = r.json.providers || {};
-    // 只刷新真实订阅源（过滤掉 mihomo 列进来的注入组）
-    const realNames = configProviderNames();
-    const allNames = Array.isArray(provObj) ? provObj.map((p) => p.name) : Object.keys(provObj);
-    const names = allNames.filter((n) => realNames.has(n));
-    if (names.length === 0) return { ok: false, error: '未配置任何订阅源' };
-    const before = snapshotProviders();
-    const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
-    if (!rr.ok) {
-      return { ok: false, error: '热加载失败：' + (rr.error ? rr.error + '（服务未运行？）' : `HTTP ${rr.status}: ${rr.body.slice(0, 120)}`) };
+  // 单源或逐源更新节点，不自动重载主配置。
+  async 'POST /api/subscriptions/refresh'({ name }) {
+    const configured = readConfigProviders();
+    const names = name ? configured.filter((p) => p.name === name).map((p) => p.name) : configured.map((p) => p.name);
+    if (!names.length) return { ok: false, error: '订阅源不存在或未声明' };
+    const status = readJson(stateFile('subscription-updates.json'), {});
+    const results = [];
+    for (const n of names) {
+      const r = await httpJson(mihomoApi + '/providers/proxies/' + encodeURIComponent(n), 'PUT', null, 30000);
+      const error = r.ok ? null : r.status === 404 ? '当前内核不支持单源更新，请升级内核；未执行全量重载' : r.error || `更新失败 HTTP ${r.status}`;
+      status[n] = { attemptedAt: Date.now(), successAt: r.ok ? Date.now() : status[n]?.successAt || null, error };
+      results.push({ name: n, ok: r.ok, error });
+      userinfoCache.delete(n);
     }
-    await sleep(6000); // 等 mihomo 重新拉取 http 订阅
-    const after = snapshotProviders();
-    const results = names.map((n) => {
-      const file = n + '.yaml';
-      if (!(file in before) && !(file in after)) return { name: n, ok: true, error: null, note: '无缓存文件（内置 provider）' };
-      const changed = (after[file] || 0) > (before[file] || 0);
-      return { name: n, ok: changed, error: changed ? null : '无变化（订阅 URL 可能不可达，仍在用旧节点）' };
-    });
-    const okCount = results.filter((x) => x.ok).length;
-    // 订阅更新后自动激活订阅里定义的组（注入 config.yaml + 二次热加载 + 恢复选择）
-    let groups;
-    try {
-      groups = await syncSubscriptionGroups();
-    } catch (e) {
-      groups = { ok: false, error: '订阅组同步异常: ' + (e.message || e) };
+    writeJson(stateFile('subscription-updates.json'), status);
+    const count = results.filter((r) => r.ok).length;
+    // Updating a provider must not trigger a global configuration reload.
+    return { ok: true, results, summary: `已更新 ${count}/${names.length} 个订阅。代理组与规则需要时请重新应用订阅。` };
+  },
+
+  // 导入预览（只读，不改配置）：拉取订阅（UA clash.meta，同 mihomo）→ 识别订阅名 → 比对已导入订阅（URL 精确匹配）
+  // 订阅名来源优先级：Content-Disposition filename*（RFC5987）> filename > body 顶层 name:；全部失败返回 null（前端回填日期）
+  async 'POST /api/import/preview'({ url }) {
+    url = subscriptionUrl(String(url || '').trim());
+    if (!url || !/^https?:\/\/.+/i.test(url)) return { ok: false, error: '订阅 URL 无效（需 http(s):// 开头）' };
+    const res = await fetchSubscription(url);
+    const text = res.text;
+    let name = null;
+    const cd = res.headers.get('content-disposition') || '';
+    let m = cd.match(/filename\*\s*=\s*[^']*''([^;]+)/i);
+    if (m) { try { name = decodeURIComponent(m[1].trim()); } catch { name = null; } }
+    if (!name) { m = cd.match(/filename\s*=\s*"?([^";]+)"?/i); if (m) name = m[1].trim(); }
+    // 2) body 顶层 name:
+    if (!name) { m = text.match(/^name:\s*["']?([^"'\n]+?)["']?\s*$/m); if (m) name = m[1].trim(); }
+    if (name) name = name.replace(/[\\/\u0000-\u001f]/g, '').slice(0, 40) || null;
+    // 节点数（尽力而为：只数 proxies 段内列表项）
+    let nodes = null;
+    const pm = text.split(/^proxies:\s*$/m);
+    if (pm.length > 1) {
+      const sec = pm[1].split(/^[a-z-]+:/m)[0];
+      nodes = (sec.match(/^\s*-\s*(?:\{)?\s*name:/gm) || []).length;
     }
-    let summary = `完成: ${okCount}/${names.length} 个订阅源已更新`;
-    if (groups.ok === false) summary += `；订阅组同步失败: ${groups.error}`;
-    else if (groups.changed) summary += `；已激活 ${groups.injected} 个订阅组` + (groups.rules ? `，合并 ${groups.rules} 条订阅规则` : '');
-    else summary += '；订阅组无变化';
-    return { ok: true, results, summary, groups };
+    // 比对已导入订阅源：config.yaml 声明的 + 仅缓存存在的（MANAGED-CONFIG 头）
+    let existing = null;
+    const provs = readConfigProviders();
+    for (const cp of provs) {
+      if (cp.url && String(cp.url).trim() === url) { existing = { name: cp.name, url: cp.url }; break; }
+    }
+    if (!existing) {
+      let files = [];
+      try { files = fs.readdirSync(PROVIDERS_DIR).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml')); } catch {}
+      for (const f of files) {
+        const nm = f.replace(/\.ya?ml$/, '');
+        if (provs.some((p) => p.name === nm)) continue;
+        try {
+          const t = fs.readFileSync(path.join(PROVIDERS_DIR, f), 'utf8');
+          const mm = t.match(/^#!MANAGED-CONFIG\s+(.+?)\s*$/m);
+          if (mm && mm[1].trim() === url) { existing = { name: nm, url: mm[1].trim() }; break; }
+        } catch {}
+      }
+    }
+    return { ok: true, name, existing, nodes };
   },
 
   // 导入订阅源（= clash import：备份 → 改配置 → 热加载；失败回滚）
   // 修复：PUT /configs 必须带 { path } body（mihomo v1.19 对空 body 返回 400）；
-  // 热加载后比对 providers 缓存文件 mtime 判定订阅是否真的拉到，区分「服务未运行」「请求被拒」「拉取失败」。
+  // 仅目标 provider 更新成功且已有缓存后才激活，失败由外层事务整体回滚。
   async 'POST /api/import'({ url, provider, reload = true }) {
     if (!url || !/^https?:\/\/.+/i.test(url)) return { ok: false, error: '订阅 URL 无效（需 http(s):// 开头）' };
     if (!fs.existsSync(mihomoCfg)) return { ok: false, error: `未找到 ${mihomoCfg}` };
-    const pname = provider && String(provider).trim() ? String(provider).trim() : '';
+    if (reload !== true) throw new Error('导入必须校验并应用，暂不支持未校验写盘');
+    subscriptionUrl(url);
+    const pname = providerName(provider || 'mysub');
+    ensureBaseBackup();
     const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '');
-    const bak = `${mihomoCfg}.bak.${ts}`;
+    const bak = `${mihomoCfg}.bak.${ts}.${Math.random().toString(36).slice(2, 8)}`;
     fs.copyFileSync(mihomoCfg, bak);
-    const p = await run('python3', [importScript], 30000, { CFG: mihomoCfg, URL: url, PNAME: pname });
-    if (p.code !== 0) {
-      try { fs.copyFileSync(bak, mihomoCfg); } catch {}
-      return { ok: false, error: '导入失败，已回滚到备份\n' + (p.stderr || p.stdout), rolledBack: true };
-    }
-    const info = p.stdout.split('\n').filter(Boolean).pop();
+    backup('导入订阅前');
+    editProvider({ name: pname, url, switchTo: true });
+    const info = `已导入订阅「${pname}」`;
     let reloaded = null;
     let subUpdated = null;
     let reloadError = null;
     let message = info; // 提前声明：热加载成功分支中会在 message 上追加同步结果（旧代码在此后声明，触发 TDZ 报错）
     if (reload) {
-      const before = snapshotProviders();
-      const rr = await httpJson(mihomoApi + '/configs', 'PUT', { path: mihomoCfg }, 30000);
+      const cp = readConfigProviders().find((p) => p.name === pname);
+      const cacheFile = path.resolve(path.dirname(mihomoCfg), cp.path || `providers/${pname}.yaml`);
+      const rr = await reloadValidatedConfig();
       if (!rr.ok) {
         reloaded = false;
         reloadError = rr.error
@@ -598,20 +545,21 @@ const handlers = {
       } else {
         reloaded = true;
         await sleep(6000); // 等 mihomo 重新拉取订阅
-        const after = snapshotProviders();
-        subUpdated = Object.keys(after).some((f) => after[f] > (before[f] || 0));
+        const update = await httpJson(mihomoApi + '/providers/proxies/' + encodeURIComponent(pname), 'PUT', null, 30000);
+        subUpdated = update.ok && fs.existsSync(cacheFile);
+        if (!subUpdated) throw new Error('订阅源未能成功拉取，未激活新订阅');
         // 导入/刷新后自动激活订阅里定义的组
         try {
-          const gs = await syncSubscriptionGroups();
-          if (gs.ok === false) message += `，但订阅组同步失败：${gs.error}`;
+          const gs = await syncSubscriptionGroups(pname);
+          if (gs.ok === false) throw new Error(gs.error);
           else if (gs.changed) message += `，已激活 ${gs.injected} 个订阅组` + (gs.rules ? `，合并 ${gs.rules} 条订阅规则` : '');
         } catch (e) {
-          message += `，但订阅组同步异常：${e.message || e}`;
+          throw e;
         }
       }
     }
     if (reloaded === null) message += '（未热加载）';
-    else if (!reloaded) message += '，但热加载失败：' + reloadError;
+    else if (!reloaded) throw new Error('热加载失败：' + reloadError);
     else if (subUpdated) message += '，已热加载生效，订阅已更新';
     else message += '，已热加载生效，但订阅缓存未变化（新源可能不可达，节点仍为旧数据）';
     return { ok: true, message, backup: bak, reloaded, subUpdated };
@@ -625,13 +573,18 @@ const handlers = {
 
   // 连接列表
   async 'GET /api/connections'() {
-    const r = await httpJson(mihomoApi + '/connections');
-    if (!r.ok || !r.json) return { ok: false, error: '获取连接列表失败（mihomo 服务未运行？）' };
-    return { ok: true, connections: r.json.connections || [] };
+    const snapshot = await getConnectionsSnapshot();
+    if (snapshot.error || !Array.isArray(snapshot.data?.connections)) return { ok: false, error: '获取连接列表失败（保留上次数据）' };
+    return { ok: true, ...normalizeConnections(snapshot) };
   },
 
   // 关闭连接
-  async 'DELETE /api/connections'({ id }) {
+  async 'DELETE /api/connections'({ id, ids }) {
+    if (Array.isArray(ids)) {
+      if (ids.length > 500 || ids.some((x) => typeof x !== 'string' || !x)) throw new Error('连接 ID 列表无效');
+      const results = await Promise.all(ids.map(async (id) => ({ id, ok: (await httpJson(mihomoApi + '/connections/' + encodeURIComponent(id), 'DELETE')).ok })));
+      return { ok: true, results, message: `已关闭 ${results.filter((x) => x.ok).length}/${ids.length} 个连接` };
+    }
     if (!id) return { ok: false, error: 'id 不能为空' };
     const r = await httpJson(mihomoApi + '/connections/' + encodeURIComponent(id), 'DELETE');
     return r.ok ? { ok: true } : { ok: false, error: '关闭失败' };
@@ -648,7 +601,7 @@ const handlers = {
 
   // mihomo 最近日志（设置页用）
   async 'GET /api/logs'({}) {
-    const r = await run('journalctl', ['--user', '-u', 'mihomo', '-n', '200', '--no-pager'], 15000);
+    const r = await run(config.journalctlBin, ['--user', '-u', config.serviceName, '-n', '200', '--no-pager'], 15000);
     if (r.code !== 0) return { ok: false, error: '读取日志失败：' + ((r.stderr || '').slice(-200) || '未知错误') };
     return { ok: true, lines: r.stdout.split('\n') };
   },
@@ -662,15 +615,26 @@ const handlers = {
 
   async 'POST /api/mode'({ mode }) {
     if (!['rule', 'global', 'direct'].includes(mode)) return { ok: false, error: 'invalid mode' };
-    // mihomo v1.19：切模式必须用 PATCH /configs（运行时生效）；
-    // PUT /configs 会触发完整配置重载，mode 会被 config.yaml 里的值覆盖回原状（v1.19 实测）
-    const r = await httpJson(mihomoApi + '/configs', 'PATCH', { mode });
-    if (!r.ok) return { ok: false, error: '切换失败（mihomo API 无响应）' };
-    const chk = await httpJson(mihomoApi + '/configs');
-    const actual = chk.ok && chk.json ? chk.json.mode : null;
-    const label = { rule: '规则', global: '全局', direct: '直连' }[mode];
-    if (actual !== mode) return { ok: false, error: `切换到${label}模式未生效（当前仍为: ${actual || '未知'}）` };
-    return { ok: true, message: `已切换到${label}模式` };
+    const previous = await httpJson(mihomoApi + '/configs');
+    if (!previous.ok) throw new Error('无法读取当前模式');
+    const original = readConfig();
+    backup('切换模式前');
+    atomicWrite(mihomoCfg, setSection(original, 'mode', mode));
+    try {
+      const selections = await httpJson(mihomoApi + '/proxies');
+      if (!selections.ok) throw new Error('无法读取节点选择');
+      markRuntimeTouched(selections.json?.proxies, previous.json);
+      const r = await httpJson(mihomoApi + '/configs', 'PATCH', { mode });
+      const check = await httpJson(mihomoApi + '/configs');
+      if (!r.ok || check.json?.mode !== mode) throw new Error('模式切换未确认');
+      const overlay = readOverlay(); overlay.network.mode = mode;
+      writeJson(stateFile('overrides.json'), overlay);
+      const draft = readDraft();
+      if (draft) { draft.overlay.network.mode = mode; writeJson(stateFile('draft.json'), draft); }
+    } catch (e) {
+      throw e;
+    }
+    return { ok: true, message: `已切换并保存${{ rule: '规则', global: '全局', direct: '直连' }[mode]}模式` };
   },
 
   // 系统配置信息（设置页用）
@@ -682,9 +646,17 @@ const handlers = {
       mihomoBin: config.mihomoBin,
       mihomoCfg: config.mihomoCfg,
       providersDir: path.join(path.dirname(config.mihomoCfg), 'providers'),
-      proxyOnFile: config.proxyOnFile,
     };
   },
 };
 
+Object.assign(handlers, managementHandlers);
+const configMutations = new Set(['POST /api/subscriptions/activate', 'POST /api/subscriptions/delete', 'POST /api/subscriptions/edit', 'POST /api/import', 'POST /api/mode', 'POST /api/config/apply', 'POST /api/backups/restore']);
+for (const [key, handler] of Object.entries(handlers)) {
+  if (!key.startsWith('GET ') && !['POST /api/import/preview', 'POST /api/proxy-test'].includes(key)) {
+    handlers[key] = (args) => serial(() => configMutations.has(key)
+      ? transaction(key, () => handler(args))
+      : handler(args));
+  }
+}
 export { handlers };

@@ -5,7 +5,6 @@ export interface StatusData {
   tun: string | null;
   node: string | null;
   mode?: string | null;
-  proxyOn: boolean;
   exitIp: string;
   version: string | null;
   mihomoAlive: boolean;
@@ -14,11 +13,6 @@ export interface StatusData {
 export interface ServiceResult {
   ok: boolean;
   service: string;
-  message: string;
-}
-
-export interface ProxyEnvResult {
-  ok: boolean;
   message: string;
 }
 
@@ -99,13 +93,30 @@ export interface TrafficData {
 export interface ConnectionMeta {
   host?: string;
   sni?: string;
+  network?: string;
+  type?: string;
+  sourceIP?: string;
+  sourcePort?: string;
+  destinationIP?: string;
+  destinationPort?: string;
   source?: string;
   destination?: string;
+  process?: string;
+  processPath?: string;
 }
 
 export interface ConnectionItem {
+  chains?: string[];
+  rule?: string;
+  rulePayload?: string;
+  start?: string;
+  uploadSpeed?: number;
+  downloadSpeed?: number;
+  closedAt?: number;
   id: string;
   process?: string;
+  processAvailable?: boolean;
+  processLabel?: string;
   metadata?: ConnectionMeta;
   upload: number;
   download: number;
@@ -113,6 +124,8 @@ export interface ConnectionItem {
 
 export interface ConnectionsData {
   connections: ConnectionItem[];
+  closed?: ConnectionItem[];
+  sampledAt?: number;
 }
 
 export interface SubUserinfo {
@@ -123,6 +136,8 @@ export interface SubUserinfo {
 }
 
 export interface SubProviderCard {
+  displayName?: string;
+  refreshStatus?: { attemptedAt: number; successAt: number | null; error: string | null };
   name: string;
   /** 内置「默认配置」卡片，不可删除 */
   builtin?: boolean;
@@ -191,6 +206,16 @@ export interface ImportData {
   subUpdated?: boolean | null;
 }
 
+/** POST /api/import/preview：拉取订阅识别名字 + 比对已导入（只读） */
+export interface ImportPreviewData {
+  /** 自动识别的订阅名（Content-Disposition filename / 顶层 name:），识别失败为 null */
+  name: string | null;
+  /** 已导入的相同链接订阅源（URL 精确匹配），无则 null */
+  existing: { name: string; url: string } | null;
+  /** 识别到的节点数（尽力而为） */
+  nodes: number | null;
+}
+
 export interface VersionData {
   version: string | null;
 }
@@ -214,5 +239,30 @@ export interface ConfigInfoData {
   mihomoBin: string;
   mihomoCfg: string;
   providersDir: string;
-  proxyOnFile: string;
 }
+
+export interface CustomRule {
+  id: string;
+  type: string;
+  payload: string;
+  target: string;
+  enabled: boolean;
+  noResolve: boolean;
+}
+export interface RulesData {
+  rules: RuleInfo[];
+  custom: CustomRule[];
+  providers: { name: string; ruleCount?: number; updatedAt?: string }[];
+  targets: string[];
+  runtimeError: string;
+  revision: string;
+  pending: boolean;
+}
+export interface ConfigPreview {
+  original: string;
+  candidate: string;
+  changed: boolean;
+  pending: boolean;
+  revision: string;
+}
+export interface BackupInfo { id: string; at: string; label: string; bytes: number }
